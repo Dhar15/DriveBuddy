@@ -1,0 +1,441 @@
+package app.drivebuddy
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.util.Log
+import app.drivebuddy.audio.Cue
+import app.drivebuddy.audio.Speaker
+import app.drivebuddy.audio.SpeechCapture
+import app.drivebuddy.core.Command
+import app.drivebuddy.core.CommandParser
+import app.drivebuddy.core.LatencyTracker
+import app.drivebuddy.core.Mark
+import app.drivebuddy.core.MatchResult
+import app.drivebuddy.core.NameMatcher
+import app.drivebuddy.spotify.SpotifyApi
+import app.drivebuddy.spotify.SpotifyAuth
+import app.drivebuddy.audio.WakeWord
+import app.drivebuddy.core.MediaAction
+
+/**
+ * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
+ * interaction per "Talk" tap: cue -> listen -> ack cue -> transcript -> rule router -> spoken reply -> log.
+ * A wake word ("Hi Friend") will later call [beginInteraction] the same way the Talk button does.
+ */
+class DriveService : Service() {
+
+    companion object {
+        const val ACTION_START = "app.drivebuddy.START"
+        const val ACTION_TALK = "app.drivebuddy.TALK"
+        const val ACTION_STOP = "app.drivebuddy.STOP"
+        const val ACTION_COMMAND = "app.drivebuddy.COMMAND"
+        const val EXTRA_TEXT = "text"
+        private const val CHANNEL_ID = "drivebuddy_drive"
+        private const val NOTIFICATION_ID = 1
+        private const val TAG = "DriveBuddy"
+        private const val INTERACTION_TIMEOUT_MS = 15_000L
+        private const val SPOTIFY = "com.spotify.music"
+        private const val YOUTUBE_MUSIC = "com.google.android.apps.youtube.music"
+        private const val RECONNECT_SPOTIFY = "Spotify isn't connected. Open DriveBuddy and tap Connect Spotify."
+
+        /** Set by the activity so the screen can show status. Always invoked on the main thread. */
+        @Volatile
+        var statusListener: ((String) -> Unit)? = null
+
+        @Volatile
+        var lastStatus: String = "Stopped"
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private val tracker = LatencyTracker()
+    private lateinit var log: LatencyLog
+    private lateinit var cue: Cue
+    private lateinit var speaker: Speaker
+    private lateinit var capture: SpeechCapture
+    private lateinit var audio: AudioManager
+    private var focusRequest: AudioFocusRequest? = null
+    private var busy = false
+    private var foregroundStarted = false
+    private var speaking = false
+    private var interrupted = false
+    private lateinit var actions: PhoneActions
+    private lateinit var anchor: OverlayAnchor
+    private lateinit var spotifyAuth: SpotifyAuth
+    private lateinit var spotify: SpotifyApi
+    private lateinit var wake: WakeWord
+    @Volatile private var destroyed = false
+    private var pausedForListening = false
+    private var keepMusicPaused = false
+
+    // If the recogniser never calls back, give up instead of staying busy forever.
+    private val watchdog = Runnable {
+        Log.w(TAG, "interaction timed out after $INTERACTION_TIMEOUT_MS ms")
+        capture.destroy()
+        tracker.sttEngine = capture.engineName
+        tracker.command = "error: timeout"
+        reply("Sorry, I didn't catch that.")
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        log = LatencyLog(this)
+        actions = PhoneActions(this)
+        anchor = OverlayAnchor(this)
+        spotifyAuth = SpotifyAuth(this)
+        spotify = SpotifyApi(spotifyAuth)
+        cue = Cue()
+        speaker = Speaker(this)
+        capture = SpeechCapture(this)
+        wake = WakeWord(this, onProblem = { why ->
+            Log.w(TAG, "wake word problem: $why")
+            publish("Wake word problem: $why", DriveState.ERROR)
+        }) {
+            // Called from the detector's thread: hop to the main thread, then act like a Talk tap.
+            main.post {
+                if (!busy && !destroyed) {
+                    Log.i(TAG, "triggered by wake word")
+                    beginInteraction()
+                }
+            }
+        }
+        audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        createChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand action=${intent?.action}")
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            publish("Microphone permission missing", DriveState.ERROR)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_TALK -> {
+                ensureForeground()
+                beginInteraction()
+            }
+            ACTION_COMMAND -> {
+                ensureForeground()
+                runTyped(intent.getStringExtra(EXTRA_TEXT).orEmpty())
+            }
+            else -> {
+                ensureForeground()
+                wake.start()
+                speaker.speak("Ready.", onStart = {}, onDone = {})
+                publish("Ready. Say \"Hi Friend\" or tap Talk.")
+            }
+        }
+        // Not sticky: Android 14+ will not let a killed microphone service restart itself from the background.
+        return START_NOT_STICKY
+    }
+
+    private fun ensureForeground() {
+        if (foregroundStarted) return
+        startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        foregroundStarted = true
+    }
+
+    fun beginInteraction() {
+        if (busy) {
+            if (speaking) {
+                Log.i(TAG, "Talk pressed while speaking: interrupting")
+                interrupted = true // cancels any action waiting for the speech to finish
+                speaker.stop()     // finishes the old interaction, which frees us to start a new one
+            } else {
+                Log.i(TAG, "Talk ignored: previous interaction still running")
+                publish("Still busy with the last request...", DriveBus.current.state)
+                return
+            }
+        }
+        busy = true
+        wake.stop() // free the microphone for the speech recogniser
+        pausedForListening = actions.pauseIfPlaying()
+        keepMusicPaused = false
+        anchor.show() // keeps a visible window so Maps/Spotify may be opened from the background
+        tracker.reset()
+        tracker.mark(Mark.TRIGGER)
+        requestFocus()
+        cue.listening()
+        publish("Listening...", DriveState.LISTENING)
+        main.postDelayed(watchdog, INTERACTION_TIMEOUT_MS)
+        // Short delay so our own beep is not picked up as speech.
+        main.postDelayed({ startCapture() }, 150)
+    }
+
+    /** Runs a command that was tapped, not spoken. Same router, same spoken reply, no listening step. */
+    private fun runTyped(text: String) {
+        if (busy) {
+            Log.i(TAG, "typed command ignored, still busy: \"$text\"")
+            return
+        }
+        Log.i(TAG, "typed command: \"$text\"")
+        busy = true
+        wake.stop() // same as a spoken request: free the microphone while we respond
+        pausedForListening = actions.pauseIfPlaying()
+        keepMusicPaused = false
+        anchor.show()
+        tracker.reset()
+        // There was no listening, so these marks land together. The engine name lets you filter these runs out of latency summaries.
+        tracker.mark(Mark.TRIGGER)
+        tracker.mark(Mark.LISTENING)
+        tracker.mark(Mark.SPEECH_END)
+        tracker.mark(Mark.ACK_CUE)
+        tracker.mark(Mark.STT_FINAL)
+        tracker.sttEngine = "typed"
+        tracker.transcript = text
+        requestFocus()
+        publish("Thinking...", DriveState.THINKING)
+        respond(CommandParser.parse(text))
+    }
+
+    private fun startCapture() {
+        capture.start(object : SpeechCapture.Callback {
+            override fun onListening() {
+                tracker.mark(Mark.LISTENING)
+            }
+
+            override fun onSpeechEnd() {
+                tracker.mark(Mark.SPEECH_END)
+                cue.ack()
+                tracker.mark(Mark.ACK_CUE)
+                publish("Thinking...", DriveState.THINKING)
+            }
+
+            override fun onResult(text: String) {
+                // Some recognisers skip onEndOfSpeech; make sure the mark exists.
+                tracker.mark(Mark.SPEECH_END)
+                tracker.mark(Mark.STT_FINAL)
+                tracker.sttEngine = capture.engineName
+                tracker.transcript = text
+                Log.i(TAG, "transcript=\"$text\" engine=${capture.engineName}")
+                respond(CommandParser.parse(text))
+            }
+
+            override fun onError(message: String) {
+                tracker.sttEngine = capture.engineName
+                tracker.command = "error: $message"
+                Log.w(TAG, "recognition failed: $message (engine=${capture.engineName})")
+                val noInternet = message.contains("network") || message.contains("server")
+                reply(
+                    if (noInternet) "I can't reach the speech service. Please check your internet connection."
+                    else "Sorry, I didn't catch that."
+                )
+            }
+        })
+    }
+
+    private fun respond(command: Command) {
+        tracker.mark(Mark.ROUTED)
+        tracker.command = command.javaClass.simpleName
+        keepMusicPaused = command is Command.Play ||
+                (command is Command.Media && (command.action == MediaAction.PAUSE || command.action == MediaAction.STOP))
+        when (command) {
+            is Command.Empty -> reply("I didn't catch that.")
+            is Command.Stop -> reply("Okay.")
+            is Command.Echo -> reply("You said: ${command.text}")
+            is Command.Media -> when {
+                actions.mediaControl(command.action) -> reply("Okay.")
+                !actions.hasNotificationAccess() -> reply("I need notification access to control music.")
+                command.action == MediaAction.STOP -> reply("Okay.")
+                else -> reply("I don't see a music app to control.")
+            }
+            is Command.Play -> handlePlay(command)
+            is Command.Call -> handleCall(command.name)
+            is Command.Navigate -> handleNavigate(command.destination)
+        }
+    }
+
+    private fun handlePlay(command: Command.Play) {
+        if (command.target == "youtube music") {
+            if (!actions.isInstalled(YOUTUBE_MUSIC)) {
+                reply("I don't see YouTube Music on this phone.")
+                return
+            }
+            reply("Playing ${command.query}.") {
+                if (!actions.playFromSearch(command.query, "youtube music")) Log.w(TAG, "could not start playback")
+            }
+            return
+        }
+        if (!spotifyAuth.isConnected()) {
+            reply(RECONNECT_SPOTIFY)
+            return
+        }
+        publish("Asking Spotify...", DriveState.THINKING)
+        // Network calls must stay off the main thread; speak the real outcome once we know it.
+        Thread {
+            val message = spotifyPlay(command.query)
+            main.post { if (!destroyed) reply(message) }
+        }.start()
+    }
+
+    /** Runs on a background thread. Returns what to say to the driver. */
+    private fun spotifyPlay(query: String): String {
+        main.removeCallbacks(watchdog) // waking Spotify can take several seconds
+        val track = when (val found = spotify.search(query)) {
+            is SpotifyApi.SearchResult.Found -> found.track
+            SpotifyApi.SearchResult.NotFound -> return "I couldn't find $query on Spotify."
+            SpotifyApi.SearchResult.NotConnected -> return RECONNECT_SPOTIFY
+            is SpotifyApi.SearchResult.Failed -> {
+                Log.w(TAG, "spotify search failed: ${found.why}")
+                return "I couldn't reach Spotify."
+            }
+        }
+        return when (val played = spotify.play(track) { actions.openApp(SPOTIFY) }) {
+            SpotifyApi.PlayResult.Started -> "Playing ${track.name} by ${track.artist}."
+            SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
+            SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
+            SpotifyApi.PlayResult.Refused -> "Spotify refused to play. Check that Premium is active."
+            is SpotifyApi.PlayResult.Failed -> {
+                Log.w(TAG, "spotify play failed: ${played.why}")
+                "Spotify didn't respond."
+            }
+        }
+    }
+
+    private fun handleCall(spoken: String) {
+        if (!actions.hasContactsPermission()) {
+            reply("I need permission to read your contacts.")
+            return
+        }
+        when (val match = NameMatcher.match(spoken, actions.loadContacts())) {
+            is MatchResult.Single -> {
+                val who = match.candidate
+                reply("Calling ${who.name}. Tap Talk to cancel.") {
+                    if (!actions.placeCall(who.number)) Log.w(TAG, "call to ${who.name} could not be placed")
+                }
+            }
+            is MatchResult.Ambiguous ->
+                reply("I found ${match.candidates.joinToString(" and ") { it.name }}. Please say the full name.")
+            MatchResult.None -> reply("I couldn't find $spoken in your contacts.")
+        }
+    }
+
+    private fun handleNavigate(spoken: String) {
+        if (!actions.canOpenOtherApps()) {
+            reply("I need permission to display over other apps before I can open maps.")
+            return
+        }
+        val query = SavedPlaces.resolve(this, spoken)
+        reply("Navigating to $spoken. Tap Talk to cancel.") {
+            if (actions.navigate(query)) {
+                Log.i(TAG, "navigation started: \"$spoken\"")
+                Journeys.record(this, spoken, query)
+            } else {
+                Log.w(TAG, "navigation to \"$spoken\" could not be started")
+            }
+        }
+    }
+
+    private fun reply(text: String, afterSpeaking: (() -> Unit)? = null) {
+        main.removeCallbacks(watchdog)
+        speaking = true
+        interrupted = false
+        publish("Speaking...", DriveState.SPEAKING)
+        speaker.speak(
+            text,
+            onStart = { tracker.mark(Mark.TTS_START) },
+            onDone = {
+                tracker.mark(Mark.TTS_DONE)
+                if (afterSpeaking != null && !interrupted) afterSpeaking()
+                finishInteraction()
+            },
+        )
+    }
+
+    private fun finishInteraction() {
+        main.removeCallbacks(watchdog)
+        speaking = false
+        log.append(tracker.toJson())
+        abandonFocus()
+        if (pausedForListening && !keepMusicPaused) actions.mediaControl(MediaAction.PLAY)
+        pausedForListening = false
+        busy = false
+        val summary = if (tracker.command.startsWith("error")) tracker.command else "heard \"${tracker.transcript}\""
+        publish("Ready. Last: $summary")
+        // Resume listening for "Hi Friend" shortly after, unless a new interaction has already begun.
+        main.postDelayed({ if (!busy && !destroyed) wake.start() }, 300)
+    }
+
+    private fun requestFocus() {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(attrs)
+            .build()
+        focusRequest = request
+        audio.requestAudioFocus(request)
+    }
+
+    private fun abandonFocus() {
+        focusRequest?.let { audio.abandonAudioFocusRequest(it) }
+        focusRequest = null
+    }
+
+    private fun publish(status: String, state: DriveState = DriveState.IDLE) {
+        lastStatus = status
+        DriveBus.post(state, status)
+        main.post { statusListener?.invoke(status) }
+    }
+
+    private fun createChannel() {
+        val channel = NotificationChannel(CHANNEL_ID, "Drive session", NotificationManager.IMPORTANCE_LOW)
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(): Notification {
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val talk = PendingIntent.getService(
+            this, 1, Intent(this, DriveService::class.java).setAction(ACTION_TALK), flags,
+        )
+        val stop = PendingIntent.getService(
+            this, 2, Intent(this, DriveService::class.java).setAction(ACTION_STOP), flags,
+        )
+        val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), flags)
+        val icon = android.R.drawable.ic_btn_speak_now
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(icon)
+            .setContentTitle("DriveBuddy")
+            .setContentText("Tap Talk to speak")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, icon), "Talk", talk).build())
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, icon), "Stop", stop).build())
+            .build()
+    }
+
+    override fun onDestroy() {
+        destroyed = true
+        wake.release()
+        anchor.hide()
+        abandonFocus()
+        capture.destroy()
+        speaker.shutdown()
+        cue.release()
+        main.removeCallbacksAndMessages(null)
+        publish("Stopped", DriveState.OFF)
+        super.onDestroy()
+    }
+}
