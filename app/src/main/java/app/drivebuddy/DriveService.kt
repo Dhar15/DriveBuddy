@@ -171,7 +171,7 @@ class DriveService : Service() {
         }
         busy = true
         wake.stop() // free the microphone for the speech recogniser
-//        pausedForListening = actions.pauseIfPlaying()
+        pausedForListening = actions.pauseIfPlaying()
         keepMusicPaused = false
         anchor.show() // keeps a visible window so Maps/Spotify may be opened from the background
         tracker.reset()
@@ -193,7 +193,7 @@ class DriveService : Service() {
         Log.i(TAG, "typed command: \"$text\"")
         busy = true
         wake.stop() // same as a spoken request: free the microphone while we respond
-//        pausedForListening = actions.pauseIfPlaying()
+        pausedForListening = actions.pauseIfPlaying()
         keepMusicPaused = false
         anchor.show()
         tracker.reset()
@@ -265,6 +265,9 @@ class DriveService : Service() {
             is Command.Volume -> handleVolume(command)
             is Command.Call -> handleCall(command.name)
             is Command.Navigate -> handleNavigate(command.destination)
+            is Command.Flashlight -> reply(PhoneControls.flashlight(this, command.on))
+            is Command.Dnd -> reply(PhoneControls.dnd(this, command.on))
+            is Command.OpenApp -> reply(PhoneControls.openApp(this, command.name))
         }
     }
 
@@ -284,10 +287,20 @@ class DriveService : Service() {
             return
         }
         publish("Asking Spotify...", DriveState.THINKING)
-        // Network calls must stay off the main thread; speak the real outcome once we know it.
+        // Network calls stay off the main thread. Search first, speak, and only then start the music.
         Thread {
-            val message = spotifyPlay(command.query)
-            main.post { if (!destroyed) reply(message) }
+            main.removeCallbacks(watchdog) // waking Spotify can take several seconds
+            val track = when (val found = spotify.search(command.query)) {
+                is SpotifyApi.SearchResult.Found -> found.track
+                SpotifyApi.SearchResult.NotFound -> { main.post { reply("I couldn't find ${command.query} on Spotify.") }; return@Thread }
+                SpotifyApi.SearchResult.NotConnected -> { main.post { reply(RECONNECT_SPOTIFY) }; return@Thread }
+                is SpotifyApi.SearchResult.Failed -> {
+                    Log.w(TAG, "spotify search failed: ${found.why}")
+                    main.post { reply("I couldn't reach Spotify.") }
+                    return@Thread
+                }
+            }
+            main.post { if (!destroyed) announceThenPlay(track) }
         }.start()
     }
 
@@ -309,20 +322,20 @@ class DriveService : Service() {
         )
     }
 
-    /** Runs on a background thread. Returns what to say to the driver. */
-    private fun spotifyPlay(query: String): String {
-        main.removeCallbacks(watchdog) // waking Spotify can take several seconds
-        val track = when (val found = spotify.search(query)) {
-            is SpotifyApi.SearchResult.Found -> found.track
-            SpotifyApi.SearchResult.NotFound -> return "I couldn't find $query on Spotify."
-            SpotifyApi.SearchResult.NotConnected -> return RECONNECT_SPOTIFY
-            is SpotifyApi.SearchResult.Failed -> {
-                Log.w(TAG, "spotify search failed: ${found.why}")
-                return "I couldn't reach Spotify."
-            }
+    /** Speaks first so the voice is heard at full volume, then starts the music. */
+    private fun announceThenPlay(track: SpotifyApi.Track) {
+        reply("Playing ${track.name} by ${track.artist}.") {
+            Thread {
+                val problem = spotifyFailureMessage(track)
+                if (problem != null) main.post { speakLate(problem) }
+            }.start()
         }
-        return when (val played = spotify.play(track) { actions.openApp(SPOTIFY) }) {
-            SpotifyApi.PlayResult.Started -> "Playing ${track.name} by ${track.artist}."
+    }
+
+    /** Runs on a background thread. Returns what to say if playback did not start, or null when it did. */
+    private fun spotifyFailureMessage(track: SpotifyApi.Track): String? =
+        when (val played = spotify.play(track) { actions.openApp(SPOTIFY) }) {
+            SpotifyApi.PlayResult.Started -> null
             SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
             SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
             SpotifyApi.PlayResult.NotPlaying -> "Spotify accepted it but didn't start playing. Please try again."
@@ -332,6 +345,20 @@ class DriveService : Service() {
                 "Spotify didn't respond."
             }
         }
+
+    /** A message that arrives after the interaction already finished (a failure we only learned about later). */
+    private fun speakLate(text: String) {
+        if (busy || destroyed) {
+            Log.i(TAG, "late message dropped, assistant is busy: \"$text\"")
+            return
+        }
+        Log.i(TAG, "late message: \"$text\"")
+        busy = true
+        wake.stop()
+        tracker.reset()
+        tracker.command = "late: spotify"
+        requestFocus()
+        reply(text)
     }
 
     private fun handleCall(spoken: String) {
