@@ -23,6 +23,7 @@ import android.provider.MediaStore
 import android.app.ActivityManager
 import android.os.Handler
 import android.os.Looper
+import app.drivebuddy.core.VolumeOp
 
 class PhoneActions(private val context: Context) {
 
@@ -137,6 +138,39 @@ class PhoneActions(private val context: Context) {
             true
         } catch (e: SecurityException) {
             false
+        }
+    }
+
+    /** Percent before and after a volume change (0 to 100), so the reply can say what happened. */
+    data class VolumeChange(val before: Int, val after: Int, val muted: Boolean)
+
+    /** Changes the media volume, which is the one Spotify plays on. Null if Android refused. */
+    fun changeVolume(op: VolumeOp, percent: Int): VolumeChange? {
+        return try {
+            val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val stream = AudioManager.STREAM_MUSIC
+            val max = audio.getStreamMaxVolume(stream)
+            val min = audio.getStreamMinVolume(stream)
+            val current = audio.getStreamVolume(stream)
+            val stepLevels = Math.max(1, Math.round(max * percent / 100f)) // at least one notch
+            when (op) {
+                VolumeOp.MUTE -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI)
+                VolumeOp.UNMUTE -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI)
+                else -> {
+                    val target = when (op) {
+                        VolumeOp.UP -> (current + stepLevels).coerceAtMost(max)
+                        VolumeOp.DOWN -> (current - stepLevels).coerceAtLeast(min)
+                        else -> Math.round(max * percent / 100f).coerceIn(min, max)
+                    }
+                    audio.setStreamVolume(stream, target, AudioManager.FLAG_SHOW_UI)
+                }
+            }
+            val after = audio.getStreamVolume(stream)
+            Log.i(tag, "volume $op: level $current -> $after of $max")
+            VolumeChange(Math.round(current * 100f / max), Math.round(after * 100f / max), audio.isStreamMute(stream))
+        } catch (e: SecurityException) {
+            Log.w(tag, "volume change refused: ${e.message}")
+            null
         }
     }
 

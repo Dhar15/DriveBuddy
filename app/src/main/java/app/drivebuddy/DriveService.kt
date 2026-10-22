@@ -31,6 +31,7 @@ import app.drivebuddy.spotify.SpotifyApi
 import app.drivebuddy.spotify.SpotifyAuth
 import app.drivebuddy.audio.WakeWord
 import app.drivebuddy.core.MediaAction
+import app.drivebuddy.core.VolumeOp
 
 /**
  * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
@@ -170,7 +171,7 @@ class DriveService : Service() {
         }
         busy = true
         wake.stop() // free the microphone for the speech recogniser
-        pausedForListening = actions.pauseIfPlaying()
+//        pausedForListening = actions.pauseIfPlaying()
         keepMusicPaused = false
         anchor.show() // keeps a visible window so Maps/Spotify may be opened from the background
         tracker.reset()
@@ -192,7 +193,7 @@ class DriveService : Service() {
         Log.i(TAG, "typed command: \"$text\"")
         busy = true
         wake.stop() // same as a spoken request: free the microphone while we respond
-        pausedForListening = actions.pauseIfPlaying()
+//        pausedForListening = actions.pauseIfPlaying()
         keepMusicPaused = false
         anchor.show()
         tracker.reset()
@@ -261,6 +262,7 @@ class DriveService : Service() {
                 else -> reply("I don't see a music app to control.")
             }
             is Command.Play -> handlePlay(command)
+            is Command.Volume -> handleVolume(command)
             is Command.Call -> handleCall(command.name)
             is Command.Navigate -> handleNavigate(command.destination)
         }
@@ -289,6 +291,24 @@ class DriveService : Service() {
         }.start()
     }
 
+    private fun handleVolume(command: Command.Volume) {
+        val change = actions.changeVolume(command.op, command.percent)
+        if (change == null) {
+            Log.w(TAG, "volume ${command.op} failed")
+            reply("I couldn't change the volume.")
+            return
+        }
+        Log.i(TAG, "volume ${command.op} ${command.percent}%: ${change.before}% -> ${change.after}%, muted=${change.muted}")
+        reply(
+            when {
+                command.op == VolumeOp.MUTE -> "Muted."
+                command.op == VolumeOp.UP && change.after == change.before -> "Volume is already at maximum."
+                command.op == VolumeOp.DOWN && change.after == change.before -> "Volume is already at minimum."
+                else -> "Volume ${change.after} percent."
+            }
+        )
+    }
+
     /** Runs on a background thread. Returns what to say to the driver. */
     private fun spotifyPlay(query: String): String {
         main.removeCallbacks(watchdog) // waking Spotify can take several seconds
@@ -305,6 +325,7 @@ class DriveService : Service() {
             SpotifyApi.PlayResult.Started -> "Playing ${track.name} by ${track.artist}."
             SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
             SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
+            SpotifyApi.PlayResult.NotPlaying -> "Spotify accepted it but didn't start playing. Please try again."
             SpotifyApi.PlayResult.Refused -> "Spotify refused to play. Check that Premium is active."
             is SpotifyApi.PlayResult.Failed -> {
                 Log.w(TAG, "spotify play failed: ${played.why}")

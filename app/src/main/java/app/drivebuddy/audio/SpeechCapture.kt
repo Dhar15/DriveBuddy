@@ -29,7 +29,6 @@ class SpeechCapture(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private var startupWatchdog: Runnable? = null
     private var session = 0 // bumped on every begin()/destroy(); stale callbacks compare against it
-
     private companion object { const val RESTART_DELAY_MS = 400L }
 
     /** "on-device", "system-default", or "unavailable" - recorded in the latency log. */
@@ -41,8 +40,8 @@ class SpeechCapture(private val context: Context) {
         SpeechRecognizer.ERROR_TOO_MANY_REQUESTS,
         SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
         SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
         SpeechRecognizer.ERROR_CLIENT,
     )
 

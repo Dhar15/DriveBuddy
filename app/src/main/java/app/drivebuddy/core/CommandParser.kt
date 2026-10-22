@@ -2,6 +2,9 @@ package app.drivebuddy.core
 
 enum class MediaAction { PLAY, PAUSE, STOP, NEXT, PREVIOUS }
 
+/** UP/DOWN move by [Command.Volume.percent] of the full range; SET jumps to that percent. */
+enum class VolumeOp { UP, DOWN, SET, MUTE, UNMUTE }
+
 /** What the router decided the user wants. */
 sealed class Command {
     object Empty : Command()
@@ -10,7 +13,11 @@ sealed class Command {
     data class Navigate(val destination: String) : Command()
     data class Media(val action: MediaAction) : Command()
     data class Play(val query: String, val target: String?) : Command()
+    data class Volume(val op: VolumeOp, val percent: Int = 0) : Command()
     data class Echo(val text: String) : Command()
+    data class Flashlight(val on: Boolean) : Command()
+    data class Dnd(val on: Boolean) : Command()
+    data class OpenApp(val name: String) : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -72,6 +79,72 @@ object CommandParser {
         navigateRule.find(core)?.let {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
+        parseSwitch(core)?.let { return it }
+        openAppRule.find(core)?.let {
+            val name = it.groupValues[1].replace(article, "").removeSuffix(" app").trim()
+            if (name.isNotEmpty()) return Command.OpenApp(name)
+        }
+        parseVolume(core)?.let { return it }
         return Command.Echo(raw.trim())
+    }
+
+    // --- Flashlight, Do Not Disturb, open app ----------------------------------------------
+    private val flashlightWord = Regex("\\b(?:flashlight|torch)\\b")
+    private val dndWord = Regex("\\b(?:do not disturb|dont disturb|don't disturb|dnd)\\b")
+    private val offWord = Regex("\\b(?:off|disable|disabled|deactivate)\\b")
+    private val onWord = Regex("\\b(?:on|enable|enabled|activate)\\b")
+    private val openAppRule = Regex("^(?:open|launch|start) (.+)$")
+
+    /** "turn off the torch", "dnd on" ... null when it names neither switch or doesn't say on/off. */
+    private fun parseSwitch(core: String): Command? {
+        val isFlash = flashlightWord.containsMatchIn(core)
+        val isDnd = dndWord.containsMatchIn(core)
+        if (isFlash == isDnd) return null // neither, or both (ambiguous)
+        val on = when {
+            offWord.containsMatchIn(core) -> false
+            onWord.containsMatchIn(core) -> true
+            else -> return null
+        }
+        return if (isFlash) Command.Flashlight(on) else Command.Dnd(on)
+    }
+
+    // --- Volume ---------------------------------------------------------------------------
+    // Checked last, after play/call/navigate, so a song called "Turn Down for What" still plays.
+    private val bigAmount = Regex("\\b(?:a lot|much|way)\\b")
+    private val smallAmount = Regex("\\b(?:a little bit|a little|a bit|slightly|little|bit)\\b")
+    private val volumeFiller = setOf("the", "my", "music", "sound", "song", "it", "a", "please", "to", "at", "set", "percent", "level")
+    private val volumeNumber = Regex("^(?:volume (\\d{1,3})|(\\d{1,3}) volume)$")
+    private val volumeUp = setOf(
+        "volume up", "up volume", "turn up", "turn volume up", "turn up volume", "louder", "make louder",
+        "increase volume", "raise volume", "crank up", "bump up", "volume higher", "higher volume", "more volume",
+    )
+    private val volumeDown = setOf(
+        "volume down", "down volume", "turn down", "turn volume down", "turn down volume", "quieter", "softer",
+        "make quieter", "make softer", "decrease volume", "lower volume", "reduce volume", "volume lower", "less volume",
+    )
+    private val volumeMax = setOf("max volume", "maximum volume", "full volume", "volume max", "volume maximum", "volume full")
+    private val volumeHalf = setOf("half volume", "volume half")
+
+    private fun parseVolume(core: String): Command.Volume? {
+        val step = when {
+            bigAmount.containsMatchIn(core) -> 25
+            smallAmount.containsMatchIn(core) -> 5
+            else -> 10
+        }
+        // Drop the amount words and small filler words, so "turn the music down a bit" becomes "turn down".
+        val rest = core.replace(bigAmount, " ").replace(smallAmount, " ")
+            .split(" ").filter { it.isNotEmpty() && it !in volumeFiller }.joinToString(" ")
+        return when {
+            rest == "mute" -> Command.Volume(VolumeOp.MUTE)
+            rest == "unmute" -> Command.Volume(VolumeOp.UNMUTE)
+            rest in volumeUp -> Command.Volume(VolumeOp.UP, step)
+            rest in volumeDown -> Command.Volume(VolumeOp.DOWN, step)
+            rest in volumeMax -> Command.Volume(VolumeOp.SET, 100)
+            rest in volumeHalf -> Command.Volume(VolumeOp.SET, 50)
+            else -> volumeNumber.find(rest)?.let { m ->
+                val n = (m.groupValues[1].ifEmpty { m.groupValues[2] }).toInt()
+                Command.Volume(VolumeOp.SET, n.coerceIn(0, 100))
+            }
+        }
     }
 }
