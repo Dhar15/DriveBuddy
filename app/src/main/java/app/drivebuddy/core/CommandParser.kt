@@ -18,6 +18,9 @@ sealed class Command {
     data class Flashlight(val on: Boolean) : Command()
     data class Dnd(val on: Boolean) : Command()
     data class OpenApp(val name: String) : Command()
+    data class Timer(val seconds: Int) : Command()
+    /** [pm] is null when the driver didn't say am/pm; [AlarmTime.resolve] picks the next sensible one. */
+    data class Alarm(val hour: Int, val minute: Int, val pm: Boolean?) : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -80,6 +83,7 @@ object CommandParser {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
         parseSwitch(core)?.let { return it }
+        parseClock(core)?.let { return it }
         openAppRule.find(core)?.let {
             val name = it.groupValues[1].replace(article, "").removeSuffix(" app").trim()
             if (name.isNotEmpty()) return Command.OpenApp(name)
@@ -106,6 +110,57 @@ object CommandParser {
             else -> return null
         }
         return if (isFlash) Command.Flashlight(on) else Command.Dnd(on)
+    }
+
+    // --- Timers and alarms ------------------------------------------------------------------
+    private const val NUMBERS = "\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty five|forty|sixty"
+    private val numberWords = mapOf(
+        "a" to 1, "an" to 1, "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6, "seven" to 7,
+        "eight" to 8, "nine" to 9, "ten" to 10, "eleven" to 11, "twelve" to 12, "fifteen" to 15, "twenty" to 20,
+        "thirty" to 30, "forty" to 40, "forty five" to 45, "sixty" to 60,
+    )
+    private val hourAndHalf = Regex("\\b($NUMBERS) hours? and a half\\b")
+    private val halfHour = Regex("\\bhalf (?:an )?hour\\b")
+    private val durationUnit = Regex("\\b($NUMBERS) (hour|hr|minute|min|second|sec)s?\\b")
+    private val alarmTime = Regex("(?:\\bat|\\bfor|\\balarm) (\\d{1,2})(?: (\\d{2}))?(?: (a m|p m|am|pm))?\\b")
+
+    private fun numberOf(token: String): Int = token.toIntOrNull() ?: numberWords[token] ?: 1
+
+    private fun parseSeconds(text: String): Int {
+        var rest = text
+        var total = 0
+        hourAndHalf.findAll(rest).forEach { total += numberOf(it.groupValues[1]) * 3600 + 1800 }
+        rest = rest.replace(hourAndHalf, " ")
+        if (halfHour.containsMatchIn(rest)) total += 1800
+        rest = rest.replace(halfHour, " ")
+        durationUnit.findAll(rest).forEach {
+            val n = numberOf(it.groupValues[1])
+            total += n * when (it.groupValues[2]) {
+                "hour", "hr" -> 3600
+                "minute", "min" -> 60
+                else -> 1
+            }
+        }
+        return total
+    }
+
+    /** "set a timer for 10 minutes", "wake me up at 6 30 am", "alarm for 7"; null when it isn't a timer or alarm. */
+    private fun parseClock(core: String): Command? {
+        val isTimer = Regex("\\btimer\\b").containsMatchIn(core)
+        val isAlarm = Regex("\\balarm\\b|\\bwake me\\b").containsMatchIn(core)
+        if (!isTimer && !isAlarm) return null
+        val seconds = parseSeconds(core)
+        val time = alarmTime.find(core)
+        // "set an alarm for 20 minutes" is a countdown whichever word was used.
+        if (seconds > 0 && (isTimer || time == null || time.groupValues[3].isEmpty() && durationUnit.containsMatchIn(core))) {
+            return Command.Timer(seconds.coerceAtMost(24 * 3600))
+        }
+        if (!isAlarm || time == null) return null
+        val hour = time.groupValues[1].toInt()
+        val minute = time.groupValues[2].ifEmpty { "0" }.toInt()
+        if (hour > 23 || minute > 59) return null
+        val pm = when (time.groupValues[3].replace(" ", "")) { "am" -> false; "pm" -> true; else -> null }
+        return Command.Alarm(hour, minute, pm)
     }
 
     // --- Volume ---------------------------------------------------------------------------

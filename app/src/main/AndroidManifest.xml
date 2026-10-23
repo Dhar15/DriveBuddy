@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <!-- Android 11+ package visibility: lets SpeechRecognizer find the device's recognition service,
      and lets us check whether Spotify / YouTube Music are installed. -->
@@ -55,5 +57,7 @@
         </service>
         <activity android:name=".PlacesActivity" android:exported="false" />
         <activity android:name=".JourneyActivity" android:exported="false" />
+        <activity android:name=".SetupActivity" android:exported="false" />
+        <activity android:name=".SettingsActivity" android:exported="false" />
     </application>
 </manifest>

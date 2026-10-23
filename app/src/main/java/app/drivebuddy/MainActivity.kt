@@ -23,6 +23,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.util.Log
 import android.widget.HorizontalScrollView
+import app.drivebuddy.ui.SettingsIconView
 
 /** Plain-views screen for milestone 1: start/stop the drive service and test a "Talk" interaction. */
 class MainActivity : Activity() {
@@ -77,7 +78,18 @@ class MainActivity : Activity() {
                 true
             }
         }
-        root.addView(greeting)
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        header.addView(greeting, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val settingsButton = SettingsIconView(this).apply {
+            val mask = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
+            background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), null, mask)
+            setOnClickListener {
+                Log.i(TAG, "settings opened from home")
+                startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+            }
+        }
+        header.addView(settingsButton, LinearLayout.LayoutParams((44 * d).toInt(), (44 * d).toInt()))
+        root.addView(header)
 
         lastTrip = TextView(this).apply {
             textSize = 14f
@@ -139,29 +151,30 @@ class MainActivity : Activity() {
         }
         root.addView(logView)
 
-        val places = TextView(this).apply {
-            text = "Places"
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF8A919E.toInt())
-            setPadding(0, pad / 2, 0, pad / 4)
-            setOnClickListener { startActivity(Intent(this@MainActivity, PlacesActivity::class.java)) }
-        }
-        root.addView(places, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-
         val end = TextView(this).apply {
-            text = "End drive session"
+            text = "End session"
             textSize = 14f
             gravity = Gravity.CENTER
-            setTextColor(0xFF6B7280.toInt())
-            setPadding(0, pad / 2, 0, pad / 2)
+            setTextColor(0xFFE5766A.toInt())
+            setPadding((24 * d).toInt(), (12 * d).toInt(), (24 * d).toInt(), (12 * d).toInt())
+            val shape = GradientDrawable().apply {
+                cornerRadius = 24 * d
+                setColor(0x14D9604F)
+                setStroke((1 * d).toInt(), 0x66D9604F)
+            }
+            val mask = GradientDrawable().apply { cornerRadius = 24 * d; setColor(Color.WHITE) }
+            background = RippleDrawable(ColorStateList.valueOf(0x33D9604F), shape, mask)
             setOnClickListener {
                 Log.i(TAG, "end session tapped")
                 send(DriveService.ACTION_STOP)
-            }        }
+            }
+        }
         root.addView(end, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = pad / 2
+        })
 
         // Android 15 draws edge-to-edge: keep content clear of the status and navigation bars.
         root.setOnApplyWindowInsetsListener { v, insets ->

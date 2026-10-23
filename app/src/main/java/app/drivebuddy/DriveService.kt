@@ -268,6 +268,8 @@ class DriveService : Service() {
             is Command.Flashlight -> reply(PhoneControls.flashlight(this, command.on))
             is Command.Dnd -> reply(PhoneControls.dnd(this, command.on))
             is Command.OpenApp -> reply(PhoneControls.openApp(this, command.name))
+            is Command.Timer -> reply(PhoneControls.timer(this, command.seconds))
+            is Command.Alarm -> reply(PhoneControls.alarm(this, command.hour, command.minute, command.pm))
         }
     }
 
