@@ -5,6 +5,13 @@ enum class MediaAction { PLAY, PAUSE, STOP, NEXT, PREVIOUS }
 /** UP/DOWN move by [Command.Volume.percent] of the full range; SET jumps to that percent. */
 enum class VolumeOp { UP, DOWN, SET, MUTE, UNMUTE }
 
+/** When a reminder should fire: a delay from now, or a clock time (today or tomorrow). */
+sealed class RemindWhen {
+    data class After(val seconds: Int) : RemindWhen()
+    /** [pm] is null when no am/pm was said. */
+    data class At(val hour: Int, val minute: Int, val pm: Boolean?, val tomorrow: Boolean) : RemindWhen()
+}
+
 /** What the router decided the user wants. */
 sealed class Command {
     object Empty : Command()
@@ -19,8 +26,14 @@ sealed class Command {
     data class Dnd(val on: Boolean) : Command()
     data class OpenApp(val name: String) : Command()
     data class Timer(val seconds: Int) : Command()
+
     /** [pm] is null when the driver didn't say am/pm; [AlarmTime.resolve] picks the next sensible one. */
     data class Alarm(val hour: Int, val minute: Int, val pm: Boolean?) : Command()
+
+    /** [whenAt] is null when the driver gave the task but no time. */
+    data class Remind(val text: String, val whenAt: RemindWhen?) : Command()
+    data class Note(val text: String) : Command()
+    data class AddTodo(val item: String, val list: String) : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -82,6 +95,7 @@ object CommandParser {
         navigateRule.find(core)?.let {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
+        parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }
         parseClock(core)?.let { return it }
         openAppRule.find(core)?.let {
@@ -161,6 +175,67 @@ object CommandParser {
         if (hour > 23 || minute > 59) return null
         val pm = when (time.groupValues[3].replace(" ", "")) { "am" -> false; "pm" -> true; else -> null }
         return Command.Alarm(hour, minute, pm)
+    }
+
+    // --- Reminders, to-dos and notes --------------------------------------------------------
+    private const val LIST_NAMES = "shopping|grocery|groceries|to do|todo|task|tasks|packing|reading|work|home"
+    private val remindRule = Regex("^(?:remind me|set (?:a )?reminder(?: for me)?)(?: to| about| that)? (.+)$")
+    private val relativeTime = Regex(
+        "\\b(?:in|after) (half an hour|(?:$NUMBERS) (?:hour|hr|minute|min|second|sec)s?(?: and a half)?" +
+                "(?: (?:and )?(?:$NUMBERS) (?:minute|min|second|sec)s?)*)\\b"
+    )
+    private val clockTime = Regex("\\b(?:at|by|for) (\\d{1,2})(?: (\\d{2}))?(?: (a m|p m|am|pm))?\\b")
+    private val tomorrowWord = Regex("\\btomorrow\\b")
+    private val todayWord = Regex("\\b(?:today|tonight)\\b")
+    private val addTodoRule = Regex("^(?:add|put) (.+) (?:to|on|in) (?:my |the |our )?(?:($LIST_NAMES) )?list$")
+    private val noteRule = Regex("^(?:make a note|take a note|save a note|add a note|note down|write down|remember that|remember)(?: that| to self| to myself| of)? (.+)$")
+
+    private fun listName(raw: String): String = when (raw) {
+        "", "to do", "todo", "task", "tasks" -> "to-do"
+        "grocery", "groceries", "shopping" -> "shopping"
+        else -> raw
+    }
+
+    private fun tidy(text: String) = text.replace(spaces, " ").trim().removePrefix("to ").removePrefix("that ").trim()
+
+    private fun parseMemory(core: String): Command? {
+        addTodoRule.find(core)?.let {
+            val item = tidy(it.groupValues[1])
+            if (item.isNotEmpty()) return Command.AddTodo(item, listName(it.groupValues[2]))
+        }
+        noteRule.find(core)?.let {
+            val text = tidy(it.groupValues[1])
+            if (text.isNotEmpty()) return Command.Note(text)
+        }
+        remindRule.find(core)?.let { return parseReminder(it.groupValues[1]) }
+        return null
+    }
+
+    /** [body] is everything after "remind me (to)": the task plus one time phrase, in either order. */
+    private fun parseReminder(body: String): Command {
+        var rest = body
+        var whenAt: RemindWhen? = null
+        val relative = relativeTime.find(rest)
+        val clock = clockTime.find(rest)
+        val tomorrow = tomorrowWord.containsMatchIn(rest)
+        if (relative != null) {
+            val seconds = if (relative.groupValues[1] == "half an hour") 1800 else parseSeconds(relative.value)
+            if (seconds > 0) {
+                whenAt = RemindWhen.After(seconds.coerceAtMost(7 * 24 * 3600))
+                rest = rest.replace(relative.value, " ")
+            }
+        } else if (clock != null) {
+            val hour = clock.groupValues[1].toInt()
+            val minute = clock.groupValues[2].ifEmpty { "0" }.toInt()
+            if (hour <= 23 && minute <= 59) {
+                val pm = when (clock.groupValues[3].replace(" ", "")) { "am" -> false; "pm" -> true; else -> null }
+                whenAt = RemindWhen.At(hour, minute, pm, tomorrow)
+                rest = rest.replace(clock.value, " ")
+            }
+        }
+        rest = rest.replace(tomorrowWord, " ").replace(todayWord, " ")
+        val task = tidy(rest)
+        return if (task.isEmpty()) Command.Empty else Command.Remind(task, whenAt)
     }
 
     // --- Volume ---------------------------------------------------------------------------

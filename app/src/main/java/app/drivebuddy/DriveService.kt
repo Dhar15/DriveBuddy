@@ -188,7 +188,8 @@ class DriveService : Service() {
         // plus a short gap so its tail isn't picked up as speech.
         main.postDelayed({
             ackVoice.play { main.postDelayed({ if (!destroyed) startCapture() }, 120) }
-        }, 150)    }
+        }, 150)
+    }
 
     /** Runs a command that was tapped, not spoken. Same router, same spoken reply, no listening step. */
     private fun runTyped(text: String) {
@@ -276,6 +277,9 @@ class DriveService : Service() {
             is Command.OpenApp -> reply(PhoneControls.openApp(this, command.name))
             is Command.Timer -> reply(PhoneControls.timer(this, command.seconds))
             is Command.Alarm -> reply(PhoneControls.alarm(this, command.hour, command.minute, command.pm))
+            is Command.Remind -> reply(PhoneControls.reminder(this, command.text, command.whenAt))
+            is Command.AddTodo -> reply(PhoneControls.listItem(this, command.item, command.list))
+            is Command.Note -> reply(PhoneControls.note(this, command.text))
         }
     }
 
