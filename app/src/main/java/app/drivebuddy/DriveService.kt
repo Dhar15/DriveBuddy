@@ -32,6 +32,7 @@ import app.drivebuddy.spotify.SpotifyAuth
 import app.drivebuddy.audio.WakeWord
 import app.drivebuddy.core.MediaAction
 import app.drivebuddy.core.VolumeOp
+import app.drivebuddy.audio.AckVoice
 
 /**
  * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
@@ -66,6 +67,7 @@ class DriveService : Service() {
     private val tracker = LatencyTracker()
     private lateinit var log: LatencyLog
     private lateinit var cue: Cue
+    private lateinit var ackVoice: AckVoice
     private lateinit var speaker: Speaker
     private lateinit var capture: SpeechCapture
     private lateinit var audio: AudioManager
@@ -102,6 +104,7 @@ class DriveService : Service() {
         spotifyAuth = SpotifyAuth(this)
         spotify = SpotifyApi(spotifyAuth)
         cue = Cue()
+        ackVoice = AckVoice(this)
         speaker = Speaker(this)
         capture = SpeechCapture(this)
         wake = WakeWord(this, onProblem = { why ->
@@ -181,8 +184,11 @@ class DriveService : Service() {
         publish("Listening...", DriveState.LISTENING)
         main.postDelayed(watchdog, INTERACTION_TIMEOUT_MS)
         // Short delay so our own beep is not picked up as speech.
-        main.postDelayed({ startCapture() }, 150)
-    }
+        // The beep, then the spoken "mhm?"; listening starts only after our own voice has finished,
+        // plus a short gap so its tail isn't picked up as speech.
+        main.postDelayed({
+            ackVoice.play { main.postDelayed({ if (!destroyed) startCapture() }, 120) }
+        }, 150)    }
 
     /** Runs a command that was tapped, not spoken. Same router, same spoken reply, no listening step. */
     private fun runTyped(text: String) {
@@ -484,6 +490,7 @@ class DriveService : Service() {
         capture.destroy()
         speaker.shutdown()
         cue.release()
+        ackVoice.release()
         main.removeCallbacksAndMessages(null)
         publish("Stopped", DriveState.OFF)
         super.onDestroy()
