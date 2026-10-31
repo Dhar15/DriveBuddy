@@ -128,6 +128,8 @@ class WakeWord(
                 var chunkPeak = 0
                 for (s in chunk) chunkPeak = maxOf(chunkPeak, abs(s.toInt()))
                 peak = maxOf(peak, chunkPeak)
+                recentPeaks[ringPos] = chunkPeak
+                ringPos = (ringPos + 1) % LOUD_WINDOW
                 silentSteps = if (chunkPeak == 0) silentSteps + 1 else 0
                 if (silentSteps >= 100 && !reportedSilence) { // 8 s of digital silence: the mic is being blocked
                     reportedSilence = true
@@ -143,9 +145,19 @@ class WakeWord(
                     best = 0f
                 }
                 if (score >= THRESHOLD) {
-                    Log.i(tag, "wake word detected, score %.2f".format(score))
-                    detected = true
-                    break
+                    hits++
+                    if (hits >= PATIENCE) {
+                        val loudness = recentPeaks.max()
+                        if (loudness >= MIN_LOUDNESS) {
+                            Log.i(tag, "wake word detected, score ${"%.2f".format(score)} after $hits frames, loudness $loudness")
+                            detected = true
+                            break
+                        }
+                        Log.i(tag, "wake word ignored: too quiet (loudness $loudness, score ${"%.2f".format(score)})")
+                        hits = 0
+                    }
+                } else if (score < RESET_BELOW) {
+                    hits = 0
                 }
             }
         } finally {
