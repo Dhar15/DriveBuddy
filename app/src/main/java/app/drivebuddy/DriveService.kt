@@ -33,6 +33,9 @@ import app.drivebuddy.audio.WakeWord
 import app.drivebuddy.core.MediaAction
 import app.drivebuddy.core.VolumeOp
 import app.drivebuddy.audio.AckVoice
+import app.drivebuddy.core.Candidate
+import app.drivebuddy.core.SmsText
+import app.drivebuddy.core.YesNo
 
 /**
  * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
@@ -84,10 +87,14 @@ class DriveService : Service() {
     @Volatile private var destroyed = false
     private var pausedForListening = false
     private var keepMusicPaused = false
+    private class Ask(val prompt: String, val onAnswer: (String) -> Unit)
+    private var pendingAsk: Ask? = null                 // a question we are about to ask or have just asked
+    private var answerHandler: ((String) -> Unit)? = null // set while we are listening for the answer
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
         Log.w(TAG, "interaction timed out after $INTERACTION_TIMEOUT_MS ms")
+        answerHandler = null
         capture.destroy()
         tracker.sttEngine = capture.engineName
         tracker.command = "error: timeout"
@@ -165,6 +172,8 @@ class DriveService : Service() {
             if (speaking) {
                 Log.i(TAG, "Talk pressed while speaking: interrupting")
                 interrupted = true // cancels any action waiting for the speech to finish
+                pendingAsk = null
+                answerHandler = null
                 speaker.stop()     // finishes the old interaction, which frees us to start a new one
             } else {
                 Log.i(TAG, "Talk ignored: previous interaction still running")
@@ -237,10 +246,18 @@ class DriveService : Service() {
                 tracker.sttEngine = capture.engineName
                 tracker.transcript = text
                 Log.i(TAG, "transcript=\"$text\" engine=${capture.engineName}")
-                respond(CommandParser.parse(text))
+                val handler = answerHandler
+                if (handler != null) {
+                    answerHandler = null
+                    Log.i(TAG, "follow-up answer: \"$text\"")
+                    handler(text)
+                } else {
+                    respond(CommandParser.parse(text))
+                }
             }
 
             override fun onError(message: String) {
+                answerHandler = null
                 tracker.sttEngine = capture.engineName
                 tracker.command = "error: $message"
                 Log.w(TAG, "recognition failed: $message (engine=${capture.engineName})")
@@ -280,6 +297,7 @@ class DriveService : Service() {
             is Command.Remind -> reply(PhoneControls.reminder(this, command.text, command.whenAt))
             is Command.AddTodo -> reply(PhoneControls.listItem(this, command.item, command.list))
             is Command.Note -> reply(PhoneControls.note(this, command.text))
+            is Command.Sms -> handleSms(command.name, command.body)
         }
     }
 
@@ -391,6 +409,68 @@ class DriveService : Service() {
         }
     }
 
+    private fun handleSms(spoken: String, body: String?) {
+        if (!actions.hasContactsPermission()) {
+            reply("I need permission to read your contacts.")
+            return
+        }
+        if (!actions.hasSmsPermission()) {
+            Log.w(TAG, "sms: permission missing")
+            reply("I need permission to send text messages. Open Permissions in DriveBuddy and turn it on.")
+            return
+        }
+        val contacts = actions.loadContacts()
+        var message = body
+        var match = NameMatcher.match(spoken, contacts)
+        if (match == MatchResult.None && body == null) {
+            // "text papa hello": there was no "saying", so the words after the contact's name are the message.
+            val words = spoken.split(" ").filter { it.isNotEmpty() }
+            for (k in words.size - 1 downTo 1) {
+                val tryName = words.take(k).joinToString(" ")
+                val m = NameMatcher.match(tryName, contacts)
+                if (m != MatchResult.None) {
+                    match = m
+                    message = words.drop(k).joinToString(" ")
+                    Log.i(TAG, "sms: read \"$tryName\" as the name and the rest as the message")
+                    break
+                }
+            }
+        }
+        when (val found = match) {
+            is MatchResult.Single -> {
+                val who = found.candidate
+                if (message.isNullOrBlank()) {
+                    ask("What should I say to ${who.name}?") { answer ->
+                        if (answer.isBlank()) reply("I didn't catch the message.") else confirmSms(who, SmsText.tidy(answer))
+                    }
+                } else {
+                    confirmSms(who, SmsText.tidy(message))
+                }
+            }
+            is MatchResult.Ambiguous ->
+                reply("I found ${found.candidates.joinToString(" and ") { it.name }}. Please say the full name.")
+            MatchResult.None -> reply("I couldn't find $spoken in your contacts.")
+        }
+    }
+
+    private fun confirmSms(who: Candidate, body: String) {
+        Log.i(TAG, "sms: confirming a ${body.length}-character message to ${who.name}")
+        askYesNo("Send to ${who.name}: $body. Shall I send it?", onYes = {
+            main.removeCallbacks(watchdog) // the phone's report can take a few seconds; we have our own 20 s limit
+            publish("Sending...", DriveState.THINKING)
+            actions.sendSms(who.number, body) { result ->
+                reply(
+                    when (result) {
+                        PhoneActions.SmsResult.SENT -> "Message sent to ${who.name}."
+                        PhoneActions.SmsResult.FAILED -> "I couldn't send that message."
+                        PhoneActions.SmsResult.UNCONFIRMED ->
+                            "I couldn't confirm that the message was sent. Please check your messages."
+                    }
+                )
+            }
+        })
+    }
+
     private fun handleNavigate(spoken: String) {
         if (!actions.canOpenOtherApps()) {
             reply("I need permission to display over other apps before I can open maps.")
@@ -418,14 +498,53 @@ class DriveService : Service() {
             onDone = {
                 tracker.mark(Mark.TTS_DONE)
                 if (afterSpeaking != null && !interrupted) afterSpeaking()
-                finishInteraction()
+                if (pendingAsk != null && !interrupted) startFollowUp() else finishInteraction()
             },
         )
+    }
+
+    /** Says [prompt], then listens for the answer and hands the text to [onAnswer]. */
+    private fun ask(prompt: String, onAnswer: (String) -> Unit) {
+        Log.i(TAG, "follow-up: asking \"$prompt\"")
+        pendingAsk = Ask(prompt, onAnswer)
+        reply(prompt)
+    }
+
+    /** A yes/no question. A mumbled answer is asked once more, then treated as no. */
+    private fun askYesNo(
+        prompt: String,
+        onYes: () -> Unit,
+        onNo: () -> Unit = { reply("Okay, cancelled.") },
+        retried: Boolean = false,
+    ) {
+        ask(prompt) { text ->
+            when (YesNo.parse(text)) {
+                true -> onYes()
+                false -> onNo()
+                null -> if (!retried) askYesNo("Sorry, was that a yes or a no?", onYes, onNo, true)
+                else reply("Okay, cancelled.")
+            }
+        }
+    }
+
+    /** Called when the question has been spoken: listen again straight away, no wake word needed. */
+    private fun startFollowUp() {
+        val asked = pendingAsk ?: return finishInteraction()
+        pendingAsk = null
+        answerHandler = asked.onAnswer
+        speaking = false
+        Log.i(TAG, "follow-up: listening for an answer to \"${asked.prompt}\"")
+        cue.listening()
+        publish("Listening...", DriveState.LISTENING)
+        main.postDelayed(watchdog, INTERACTION_TIMEOUT_MS)
+        main.postDelayed({ if (!destroyed) startCapture() }, 150)
     }
 
     private fun finishInteraction() {
         main.removeCallbacks(watchdog)
         speaking = false
+        pendingAsk = null
+        answerHandler = null
         log.append(tracker.toJson())
         abandonFocus()
         if (pausedForListening && !keepMusicPaused) actions.mediaControl(MediaAction.PLAY)

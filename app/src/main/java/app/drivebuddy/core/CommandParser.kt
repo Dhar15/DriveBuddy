@@ -33,6 +33,8 @@ sealed class Command {
     /** [whenAt] is null when the driver gave the task but no time. */
     data class Remind(val text: String, val whenAt: RemindWhen?) : Command()
     data class Note(val text: String) : Command()
+    /** [body] is null when the driver named the person but not the message. */
+    data class Sms(val name: String, val body: String?) : Command()
     data class AddTodo(val item: String, val list: String) : Command()
 }
 
@@ -95,6 +97,7 @@ object CommandParser {
         navigateRule.find(core)?.let {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
+        parseSms(core)?.let { return it }
         parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }
         parseClock(core)?.let { return it }
@@ -175,6 +178,18 @@ object CommandParser {
         if (hour > 23 || minute > 59) return null
         val pm = when (time.groupValues[3].replace(" ", "")) { "am" -> false; "pm" -> true; else -> null }
         return Command.Alarm(hour, minute, pm)
+    }
+
+    // --- Text messages ----------------------------------------------------------------------
+    private val smsRule = Regex("^(?:send (?:a |an )?(?:text message|text|sms|message)(?: to)?|text|message|sms) (.+)$")
+    private val smsSplit = Regex("^(.+?) (?:saying that|saying|that says|and say|and tell (?:him|her|them)|tells? (?:him|her|them)|say|that) (.+)$")
+
+    private fun parseSms(core: String): Command? {
+        val rest = smsRule.find(core)?.groupValues?.get(1) ?: return null
+        val split = smsSplit.find(rest)
+        val name = (split?.groupValues?.get(1) ?: rest).replace(article, "").trim()
+        val body = split?.groupValues?.get(2)?.trim()?.ifEmpty { null }
+        return if (name.isEmpty()) null else Command.Sms(name, body)
     }
 
     // --- Reminders, to-dos and notes --------------------------------------------------------

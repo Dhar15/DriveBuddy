@@ -22,7 +22,14 @@ class WakeWord(
 
     companion object {
         /** 0..1. Lower = wakes more easily but also by mistake. Tune with the "wake score" lines in Logcat. */
-        const val THRESHOLD = 0.5f
+        const val THRESHOLD = 0.7f
+        /** Frames (80 ms each) at or above THRESHOLD needed before waking. One lone frame is usually a false alarm. */
+        private const val PATIENCE = 2
+        /** A frame scoring below this restarts the count. */
+        private const val RESET_BELOW = 0.3f
+        /** The loudest sample in the last second must reach this, so near-silence can never wake us. */
+        private const val MIN_LOUDNESS = 1200
+        private const val LOUD_WINDOW = 12 // chunks, about one second
         /** Scores at or above this are written to Logcat, so we can see how close near-misses were. */
         private const val LOG_FROM = 0.2f
     }
@@ -103,6 +110,9 @@ class WakeWord(
             var silentSteps = 0   // consecutive chunks that were exactly silent
             var reportedSilence = false
             var best = 0f         // highest score since the last heartbeat
+            var hits = 0          // frames in a row at or above THRESHOLD
+            val recentPeaks = IntArray(LOUD_WINDOW)
+            var ringPos = 0
 
             while (running) {
                 val n = record.read(chunk, filled, chunk.size - filled)

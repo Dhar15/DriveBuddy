@@ -44,6 +44,7 @@ class SetupActivity : Activity() {
             add(runtime("Microphone", "Hear you and the wake word", Manifest.permission.RECORD_AUDIO))
             add(runtime("Contacts", "Call people by name", Manifest.permission.READ_CONTACTS))
             add(runtime("Phone calls", "Place calls for you", Manifest.permission.CALL_PHONE))
+            add(runtime("Text messages", "Send texts for you", Manifest.permission.SEND_SMS))
             add(Item("Calendar", "Set reminders in your calendar",
                 { PhoneControls.hasCalendarAccess(this@SetupActivity) },
                 { requestPermissions(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR), 1) },

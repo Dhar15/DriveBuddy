@@ -24,6 +24,12 @@ import android.app.ActivityManager
 import android.os.Handler
 import android.os.Looper
 import app.drivebuddy.core.VolumeOp
+import android.telephony.SmsManager
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.os.Build
 
 class PhoneActions(private val context: Context) {
 
@@ -204,4 +210,76 @@ class PhoneActions(private val context: Context) {
             false
         }
     }
-}
+
+    fun hasSmsPermission(): Boolean =
+        context.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+
+    /** Hands a text message to the phone's SMS service. True means the phone accepted it, not that it was delivered. */
+    enum class SmsResult { SENT, FAILED, UNCONFIRMED }
+
+    /**
+     * Sends a text and calls [onResult] on the main thread once the phone reports whether it left.
+     * SENT means it reached the mobile network; it does not mean the other phone has received it.
+     */
+    fun sendSms(number: String, body: String, onResult: (SmsResult) -> Unit) {
+        if (!hasSmsPermission()) {
+            onResult(SmsResult.FAILED)
+            return
+        }
+        val main = Handler(Looper.getMainLooper())
+        val sms = context.getSystemService(SmsManager::class.java)
+        val parts = sms.divideMessage(body)
+        val action = "app.drivebuddy.SMS_SENT.${System.nanoTime()}"
+        var remaining = parts.size
+        var allOk = true
+        var finished = false
+        lateinit var receiver: BroadcastReceiver
+
+        fun finish(result: SmsResult) {
+            if (finished) return
+            finished = true
+            try { context.unregisterReceiver(receiver) } catch (e: IllegalArgumentException) { /* already gone */ }
+            Log.i(tag, "sms: result=$result")
+            onResult(result)
+        }
+
+        receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (resultCode != Activity.RESULT_OK) {
+                    allOk = false
+                    Log.w(tag, "sms: a part failed, code=$resultCode")
+                }
+                remaining--
+                if (remaining == 0) finish(if (allOk) SmsResult.SENT else SmsResult.FAILED)
+            }
+        }
+        try {
+            val filter = IntentFilter(action)
+            if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            else context.registerReceiver(receiver, filter)
+            val sentIntents = ArrayList<PendingIntent>(parts.size)
+            parts.forEachIndexed { i, _ ->
+                sentIntents.add(
+                    PendingIntent.getBroadcast(
+                        context, i, Intent(action).setPackage(context.packageName),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT,
+                    )
+                )
+            }
+            if (parts.size > 1) sms.sendMultipartTextMessage(number, null, parts, sentIntents, null)
+            else sms.sendTextMessage(number, null, body, sentIntents[0], null)
+            Log.i(tag, "sms: handed to the phone, ${parts.size} part(s), ${body.length} chars; waiting for its report")
+            main.postDelayed({
+                if (!finished) {
+                    Log.w(tag, "sms: no report from the phone after 20 s")
+                    finish(SmsResult.UNCONFIRMED)
+                }
+            }, 20_000)
+        } catch (e: SecurityException) {
+            Log.w(tag, "sms refused: ${e.message}")
+            finish(SmsResult.FAILED)
+        } catch (e: IllegalArgumentException) {
+            Log.w(tag, "sms rejected: ${e.message}")
+            finish(SmsResult.FAILED)
+        }
+    }}
