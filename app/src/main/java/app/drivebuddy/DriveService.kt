@@ -463,6 +463,11 @@ class DriveService : Service() {
             reply("I need location permission for the weather. Please allow it in DriveBuddy's permissions.")
             return
         }
+        if (!LocationHelper.isLocationOn(this)) {
+            Log.w("DriveBuddy", "weather: location services are off")
+            reply("Your phone's location is turned off. Please switch it on.")
+            return
+        }
         main.removeCallbacks(watchdog) // location + network can outlast the watchdog
         publish("Checking the weather...")
         LocationHelper.current(this) { location ->

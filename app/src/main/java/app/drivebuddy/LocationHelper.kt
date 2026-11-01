@@ -23,6 +23,9 @@ object LocationHelper {
         context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    fun isLocationOn(context: Context): Boolean =
+        (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+
     @SuppressLint("MissingPermission")
     fun current(context: Context, onResult: (Location?) -> Unit) {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
