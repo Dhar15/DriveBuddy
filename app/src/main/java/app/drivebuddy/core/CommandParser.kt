@@ -16,6 +16,7 @@ sealed class RemindWhen {
 sealed class Command {
     object Empty : Command()
     object Stop : Command()
+    object Weather : Command()
     data class Call(val name: String) : Command()
     data class Navigate(val destination: String) : Command()
     data class Media(val action: MediaAction) : Command()
@@ -75,6 +76,14 @@ object CommandParser {
     private val navigateRule =
         Regex("^(?:navigate to|navigate me to|take me to|take me|directions to|drive to|drive me to|go to) (.+)$")
     private val article = Regex("^(?:the|my) ")
+
+    private val weatherRule = Regex(
+        "^(?:(?:what|how)(?: is|'s|s)? (?:the )?(?:weather|temperature)(?: like)?|(?:the )?weather|" +
+                "(?:is it|will it|is it going to|will it be) (?:going to )?(?:rain|raining|rainy)|" +
+                "how (?:hot|cold|warm) is it|do i need (?:an |a )?umbrella|" +
+                "should i (?:take|carry|bring) (?:an |a )?umbrella)" +
+                "(?: (?:today|now|outside|right now|here|currently|at the moment))?$"
+    )
     private val playRule = Regex("^play (.+?)(?: on (spotify|youtube music))?$")
 
     fun parse(raw: String): Command {
@@ -97,6 +106,7 @@ object CommandParser {
         navigateRule.find(core)?.let {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
+        if (weatherRule.matches(core)) return Command.Weather
         parseSms(core)?.let { return it }
         parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }

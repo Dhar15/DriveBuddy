@@ -31,7 +31,24 @@ class SpotifyAuth(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("spotify", Context.MODE_PRIVATE)
 
-    fun isConnected(): Boolean = prefs.getString("refresh_token", null) != null
+    init {
+        // One-time move of a login saved by older builds from plain text to encrypted storage.
+        val oldRefresh = prefs.getString("refresh_token", null)
+        if (oldRefresh != null) {
+            try {
+                prefs.edit()
+                    .putString("refresh_token_enc", TokenVault.encrypt(oldRefresh))
+                    .remove("refresh_token").remove("access_token").remove("expires_at")
+                    .apply()
+                Log.i(TAG, "spotify: moved the saved login to encrypted storage")
+            } catch (e: Exception) {
+                Log.w(TAG, "spotify: could not encrypt the saved login: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun isConnected(): Boolean =
+        prefs.getString("refresh_token_enc", null)?.let { TokenVault.decrypt(it) } != null
 
     fun connect(onDone: (Boolean) -> Unit) {
         if (CLIENT_ID.isBlank()) {
@@ -70,14 +87,14 @@ class SpotifyAuth(context: Context) {
 
     fun accessToken(): String? {
         val expiresAt = prefs.getLong("expires_at", 0L)
-        val current = prefs.getString("access_token", null)
+        val current = prefs.getString("access_token_enc", null)?.let { TokenVault.decrypt(it) }
         if (current != null && System.currentTimeMillis() < expiresAt - 60_000) return current
-        val refresh = prefs.getString("refresh_token", null) ?: return null
+        val refresh = prefs.getString("refresh_token_enc", null)?.let { TokenVault.decrypt(it) } ?: return null
         val json = postForm(
             mapOf("grant_type" to "refresh_token", "refresh_token" to refresh, "client_id" to CLIENT_ID),
         ) ?: return null
         save(json)
-        return prefs.getString("access_token", null)
+        return json.optString("access_token").takeIf { it.isNotEmpty() }
     }
 
     private fun waitForCode(server: ServerSocket, state: String): String? {
@@ -131,11 +148,17 @@ class SpotifyAuth(context: Context) {
     }
 
     private fun save(json: JSONObject) {
-        val editor = prefs.edit()
-            .putString("access_token", json.getString("access_token"))
-            .putLong("expires_at", System.currentTimeMillis() + json.optLong("expires_in", 3600) * 1000)
-        json.optString("refresh_token").takeIf { it.isNotEmpty() }?.let { editor.putString("refresh_token", it) }
-        editor.apply()
+        try {
+            val editor = prefs.edit()
+                .putString("access_token_enc", TokenVault.encrypt(json.getString("access_token")))
+                .putLong("expires_at", System.currentTimeMillis() + json.optLong("expires_in", 3600) * 1000)
+            json.optString("refresh_token").takeIf { it.isNotEmpty() }
+                ?.let { editor.putString("refresh_token_enc", TokenVault.encrypt(it)) }
+            editor.apply()
+            Log.i(TAG, "spotify: tokens saved (encrypted)")
+        } catch (e: Exception) {
+            Log.w(TAG, "spotify: could not save tokens: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     private fun postForm(params: Map<String, String>): JSONObject? {
