@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
+import android.content.Intent
+import android.provider.Settings
 
 /** Finds the phone's current location with the platform API (no Google libraries). Result arrives on the main thread. */
 object LocationHelper {
@@ -25,6 +27,16 @@ object LocationHelper {
 
     fun isLocationOn(context: Context): Boolean =
         (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+
+    /** Opens the phone's location switch screen. */
+    fun openSettings(context: Context): Boolean = try {
+        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        Log.i(TAG, "location: opened settings")
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "location: could not open settings: ${e.javaClass.simpleName}")
+        false
+    }
 
     @SuppressLint("MissingPermission")
     fun current(context: Context, onResult: (Location?) -> Unit) {

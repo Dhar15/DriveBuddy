@@ -17,6 +17,8 @@ sealed class Command {
     object Empty : Command()
     object Stop : Command()
     object Weather : Command()
+    /** "find a petrol pump near me", "nearest atm" ... [what] is the thing to search for. */
+    data class Nearby(val what: String) : Command()
     data class Call(val name: String) : Command()
     data class Navigate(val destination: String) : Command()
     data class Media(val action: MediaAction) : Command()
@@ -82,7 +84,7 @@ object CommandParser {
                 "(?:is it|will it|is it going to|will it be) (?:going to )?(?:rain|raining|rainy)|" +
                 "how (?:hot|cold|warm) is it|do i need (?:an |a )?umbrella|" +
                 "should i (?:take|carry|bring) (?:an |a )?umbrella)" +
-                "(?: (?:today|now|outside|right now|here|currently|at the moment))?$"
+                "(?: (?:today|now|outside|right now|here|currently|at the moment|near me|nearby|around here))?$"
     )
     private val playRule = Regex("^play (.+?)(?: on (spotify|youtube music))?$")
 
@@ -115,6 +117,7 @@ object CommandParser {
             val name = it.groupValues[1].replace(article, "").removeSuffix(" app").trim()
             if (name.isNotEmpty()) return Command.OpenApp(name)
         }
+        parseNearby(core)?.let { return it }
         parseVolume(core)?.let { return it }
         return Command.Echo(raw.trim())
     }
@@ -261,6 +264,28 @@ object CommandParser {
         rest = rest.replace(tomorrowWord, " ").replace(todayWord, " ")
         val task = tidy(rest)
         return if (task.isEmpty()) Command.Empty else Command.Remind(task, whenAt)
+    }
+
+    // --- Nearby places ---------------------------------------------------------------------
+    private val nearbyLead = Regex("^(?:nearest|closest|nearby) ")
+    private val nearbyRules = listOf(
+        // "find a petrol pump near me", "is there a pharmacy nearby", "where's an atm around here"
+        Regex(
+            "^(?:(?:find|search for|look for|show me|get me|search)(?: me)?|where(?: is|'s|s)|is there|are there)" +
+                    "(?: (?:a|an|the|some|any))? (.+?) (?:near me|nearby|near by|around me|near here|close by|around here)$"
+        ),
+        // "nearest petrol pump", "where is the closest atm", "find me the nearest coffee shop"
+        Regex("^(?:(?:find|show me|get me|where(?: is|'s|s)|what(?: is|'s|s)) )?(?:me )?(?:the |a |an )?(?:nearest|closest) (.+)$"),
+        // "petrol pump near me"
+        Regex("^(.+?) (?:near me|nearby|near by|around me|near here|close by|around here)$"),
+    )
+
+    private fun parseNearby(core: String): Command? {
+        for (rule in nearbyRules) {
+            val what = rule.find(core)?.groupValues?.get(1)?.replace(nearbyLead, "")?.trim() ?: continue
+            if (what.isNotEmpty()) return Command.Nearby(what)
+        }
+        return null
     }
 
     // --- Volume ---------------------------------------------------------------------------

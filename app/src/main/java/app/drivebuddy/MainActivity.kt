@@ -24,6 +24,7 @@ import android.graphics.drawable.RippleDrawable
 import android.util.Log
 import android.widget.HorizontalScrollView
 import app.drivebuddy.ui.SettingsIconView
+import android.widget.FrameLayout
 
 /** Plain-views screen for milestone 1: start/stop the drive service and test a "Talk" interaction. */
 class MainActivity : Activity() {
@@ -37,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var chips: LinearLayout
     private var chipsAnimated = false
     private lateinit var lastTrip: TextView
+    private lateinit var choicesBox: LinearLayout
 
     private val permissionRequest = 100
 
@@ -133,6 +135,22 @@ class MainActivity : Activity() {
         root.addView(status, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         )
+
+        choicesBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            isClickable = true // swallow taps so the orb underneath is not triggered
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xB30A0C0F.toInt(), 0xF20A0C0F.toInt()),
+            )
+            setPadding(pad, pad, pad, pad)
+            setOnApplyWindowInsetsListener { v, insets ->
+                v.setPadding(pad, insets.systemWindowInsetTop + pad, pad, insets.systemWindowInsetBottom + pad)
+                insets
+            }
+        }
+
         chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         suggestions = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -140,6 +158,7 @@ class MainActivity : Activity() {
             alpha = 0f            // render() fades it in only while idle
             addView(chips)
         }
+
         root.addView(suggestions, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
@@ -182,7 +201,10 @@ class MainActivity : Activity() {
             insets
         }
 
-        setContentView(root)
+        setContentView(FrameLayout(this).apply {
+            addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(choicesBox, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        })
 
         // One gentle entrance: the greeting eases in when the app opens.
         greeting.alpha = 0f
@@ -251,6 +273,141 @@ class MainActivity : Activity() {
         if (places.isNotEmpty()) chipsAnimated = true
     }
 
+    /** Draws the "pick one" card (nearby places), or hides it when there is nothing to pick. */
+    /** Draws the full-screen "pick one" layer (nearby places) over the orb, or fades it away when there is none. */
+    private fun showChoices(card: ChoiceCard?) {
+        choicesBox.animate().cancel()
+        if (card == null) {
+            if (choicesBox.visibility == View.VISIBLE) {
+                choicesBox.animate().alpha(0f).setDuration(180).withEndAction {
+                    choicesBox.visibility = View.GONE
+                    choicesBox.removeAllViews()
+                }.start()
+            }
+            return
+        }
+        Log.i(TAG, "choices: showing ${card.rows.size} row(s) for \"${card.title}\"")
+        val d = resources.displayMetrics.density
+        val wasHidden = choicesBox.visibility != View.VISIBLE
+        choicesBox.removeAllViews()
+        choicesBox.visibility = View.VISIBLE
+        if (wasHidden) {
+            choicesBox.alpha = 0f
+            choicesBox.animate().alpha(1f).setDuration(220).start()
+        } else {
+            choicesBox.alpha = 1f
+        }
+
+        choicesBox.addView(TextView(this).apply {
+            text = card.title
+            textSize = 30f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        })
+        choicesBox.addView(TextView(this).apply {
+            text = card.hint
+            textSize = 14f
+            setTextColor(0xFF8A919E.toInt())
+            setPadding(0, (4 * d).toInt(), 0, (16 * d).toInt())
+        })
+
+        card.rows.forEachIndexed { i, row ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(0xE6161B22.toInt())
+                    cornerRadius = 22 * d
+                    setStroke((1 * d).toInt().coerceAtLeast(1), 0x22FFFFFF)
+                }
+                foreground = RippleDrawable(
+                    ColorStateList.valueOf(0x33FFFFFF), null,
+                    GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 22 * d },
+                )
+                setPadding((18 * d).toInt(), (14 * d).toInt(), (14 * d).toInt(), (14 * d).toInt())
+                isClickable = true
+                setOnClickListener {
+                    Log.i(TAG, "choices: tapped ${i + 1}")
+                    DriveBus.tapChoice("${i + 1}")
+                }
+            }
+            item.addView(TextView(this).apply {
+                text = "${i + 1}"
+                textSize = 34f
+                setTextColor(0xFFB9A8FF.toInt())
+                typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+                minWidth = (44 * d).toInt()
+            })
+            val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            info.addView(TextView(this).apply {
+                text = row.label
+                textSize = 20f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(Color.WHITE)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            })
+            info.addView(TextView(this).apply {
+                text = row.detail
+                textSize = 15f
+                setTextColor(0xFF8A919E.toInt())
+                setPadding(0, (2 * d).toInt(), 0, 0)
+            })
+            item.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            item.addView(TextView(this).apply {
+                text = "Navigate"
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                background = GradientDrawable().apply { setColor(0xFF6B4EE6.toInt()); cornerRadius = 24 * d }
+                setPadding((18 * d).toInt(), (10 * d).toInt(), (18 * d).toInt(), (10 * d).toInt())
+            })
+            choicesBox.addView(item, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            ).apply { bottomMargin = (12 * d).toInt() })
+            if (wasHidden) { // one gentle entrance, staggered
+                item.alpha = 0f
+                item.translationY = 14 * d
+                item.animate().alpha(1f).translationY(0f).setStartDelay(90L + i * 70L).setDuration(260).start()
+            }
+        }
+        if (card.rows.size < 3) { // keep the cards from stretching when fewer than three are left
+            choicesBox.addView(View(this), LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, (3 - card.rows.size).toFloat()))
+        }
+
+        fun button(label: String, color: Int, token: String) = TextView(this).apply {
+            text = label
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(color)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = GradientDrawable().apply {
+                setColor(0x00000000)
+                cornerRadius = 28 * d
+                setStroke((1 * d).toInt().coerceAtLeast(1), color)
+            }
+            foreground = RippleDrawable(
+                ColorStateList.valueOf(0x33FFFFFF), null,
+                GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 28 * d },
+            )
+            isClickable = true
+            setOnClickListener {
+                Log.i(TAG, "choices: tapped $token")
+                DriveBus.tapChoice(token)
+            }
+        }
+        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (card.hasMore) {
+            footer.addView(button("More", 0xFFB9A8FF.toInt(), "more"),
+                LinearLayout.LayoutParams(0, (54 * d).toInt(), 1f).apply { marginEnd = (12 * d).toInt() })
+        }
+        footer.addView(button("Cancel", 0xFF8A919E.toInt(), "cancel"),
+            LinearLayout.LayoutParams(0, (54 * d).toInt(), 1f))
+        choicesBox.addView(footer, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+    }
+
     private fun showLastTrip() {
         val trip = Journeys.all(this).firstOrNull()
         if (trip == null) {
@@ -274,6 +431,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         DriveService.statusListener = null
+        DriveBus.choicesListener = null
         DriveBus.listener = null
         super.onPause()
     }
@@ -288,6 +446,8 @@ class MainActivity : Activity() {
         showLastTrip()
         render(DriveBus.current)
         DriveBus.listener = { render(it) }
+        DriveBus.choicesListener = { showChoices(it) }
+        showChoices(DriveBus.choices)
         DriveService.statusListener = { refreshLog() }
         ensureSetup()
     }

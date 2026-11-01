@@ -37,6 +37,9 @@ import app.drivebuddy.core.Candidate
 import app.drivebuddy.core.SmsText
 import app.drivebuddy.core.YesNo
 import app.drivebuddy.core.WeatherText
+import app.drivebuddy.core.NearbyText
+import app.drivebuddy.core.RankedPlace
+import app.drivebuddy.core.PlaceChoice
 import kotlin.concurrent.thread
 
 /**
@@ -300,6 +303,7 @@ class DriveService : Service() {
             is Command.AddTodo -> reply(PhoneControls.listItem(this, command.item, command.list))
             is Command.Note -> reply(PhoneControls.note(this, command.text))
             is Command.Sms -> handleSms(command.name, command.body)
+            is Command.Nearby -> handleNearby(command.what)
             Command.Weather -> handleWeather()
         }
     }
@@ -456,18 +460,130 @@ class DriveService : Service() {
         }
     }
 
+    private fun handleNearby(what: String) {
+        Log.i(TAG, "nearby: asked for '$what'")
+        if (!locationReady("nearby")) return
+        main.removeCallbacks(watchdog) // location + network can outlast the watchdog
+        publish("Looking for $what...")
+        LocationHelper.current(this) { location ->
+            if (location == null) {
+                reply("I couldn't find your location.")
+                return@current
+            }
+            thread(name = "nearby") {
+                val places = NearbyClient.search(what, location.latitude, location.longitude)
+                main.post {
+                    when {
+                        places == null -> reply("I couldn't search for places right now.")
+                        places.isEmpty() -> reply("I couldn't find any $what nearby.")
+                        else -> offerBatch(what, NearbyText.rank(places, location.latitude, location.longitude, limit = 20), 0)                    }
+                }
+            }
+        }
+    }
+
+    /** Shows and reads out places [start]..[start]+2, then waits for "one", "two", "three", "more" or "cancel". */
+    private fun offerBatch(what: String, ranked: List<RankedPlace>, start: Int) {
+        val batch = ranked.drop(start).take(NearbyText.BATCH)
+        if (batch.isEmpty()) {
+            Log.i(TAG, "nearby: no more results for '$what'")
+            DriveBus.showChoices(null)
+            reply("That's all I found for $what nearby.")
+            return
+        }
+        val more = start + batch.size < ranked.size
+        Log.i(TAG, "nearby: offering results ${start + 1}-${start + batch.size} of ${ranked.size}")
+        DriveBus.showChoices(
+            ChoiceCard(
+                title = what.replaceFirstChar { it.uppercase() },
+                rows = batch.map { ChoiceRow(NearbyText.shortName(it.place.name), NearbyText.shortDistance(it.meters)) },
+                hint = NearbyText.hint(batch.size),
+                hasMore = more,
+            ),
+        )
+        DriveBus.choiceTap = { token -> onChoiceTapped(token) }
+        bringScreenToFront()
+        askBatch(what, ranked, start, batch, more, NearbyText.offerBatch(batch, start == 0, more), retried = false)
+    }
+
+    private fun askBatch(
+        what: String, ranked: List<RankedPlace>, start: Int, batch: List<RankedPlace>,
+        more: Boolean, prompt: String, retried: Boolean,
+    ) {
+        ask(prompt) { raw ->
+            val tapped = raw.startsWith("tap:")
+            val choice = PlaceChoice.parse(raw.removePrefix("tap:"), batch.size)
+            Log.i(TAG, "nearby: answer -> $choice (tapped=$tapped)")
+            when (choice) {
+                is PlaceChoice.Pick -> {
+                    val r = batch[choice.number - 1]
+                    val go = {
+                        if (!actions.navigate("${r.place.latitude},${r.place.longitude}")) {
+                            Log.w(TAG, "nearby: could not start navigation (Google Maps missing?)")
+                        }
+                    }
+                    if (tapped) {
+                        Log.i(TAG, "nearby: navigating to #${choice.number} straight away (tapped)")
+                        go()
+                        finishInteraction()
+                    } else {
+                        reply("Starting navigation to ${NearbyText.shortName(r.place.name)}.") { go() }
+                    }
+                }
+                PlaceChoice.More -> offerBatch(what, ranked, start + batch.size)
+                PlaceChoice.Cancel -> if (tapped) finishInteraction() else reply("Okay.")
+                PlaceChoice.Unknown ->
+                    if (!retried) {
+                        askBatch(what, ranked, start, batch, more, NearbyText.retryPrompt(batch.size, more), true)
+                    } else {
+                        reply("Okay, cancelled.")
+                    }
+            }
+        }
+    }
+
+    /** A button on the pick-one card was tapped: cut off the read-out or the listening and deliver it as the answer. */
+    private fun onChoiceTapped(token: String) {
+        val handler = pendingAsk?.onAnswer ?: answerHandler
+        if (handler == null) {
+            Log.i(TAG, "choice tapped but nothing is waiting for it: $token")
+            return
+        }
+        Log.i(TAG, "choice tapped: $token (speaking=$speaking)")
+        main.removeCallbacks(watchdog)
+        pendingAsk = null
+        answerHandler = null
+        capture.destroy() // stop listening, if we were
+        if (speaking) {
+            interrupted = true // cancels the follow-up that was due after the read-out
+            speaker.stop()     // ends the read-out
+        }
+        main.postDelayed({
+            if (destroyed) return@postDelayed
+            busy = true // the old interaction has just finished; this tap starts a new one
+            wake.stop()
+            requestFocus()
+            handler("tap:$token")
+        }, 150)
+    }
+
+    /** If the home screen isn't showing (Maps is open, say), bring it forward so the list is visible. */
+    private fun bringScreenToFront() {
+        if (DriveBus.listener != null) return // already on screen
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+            Log.i(TAG, "choices: brought the screen to the front")
+        } catch (e: Exception) {
+            Log.w(TAG, "choices: could not show the screen: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
     private fun handleWeather() {
         Log.i("DriveBuddy", "weather: asked")
-        if (!LocationHelper.hasPermission(this)) {
-            Log.w("DriveBuddy", "weather: no location permission")
-            reply("I need location permission for the weather. Please allow it in DriveBuddy's permissions.")
-            return
-        }
-        if (!LocationHelper.isLocationOn(this)) {
-            Log.w("DriveBuddy", "weather: location services are off")
-            reply("Your phone's location is turned off. Please switch it on.")
-            return
-        }
+        if (!locationReady("weather")) return
         main.removeCallbacks(watchdog) // location + network can outlast the watchdog
         publish("Checking the weather...")
         LocationHelper.current(this) { location ->
@@ -482,6 +598,28 @@ class DriveService : Service() {
                 }
             }
         }
+    }
+
+    /** True when location can be read. Otherwise it says (or asks) what to fix and returns false. */
+    private fun locationReady(feature: String): Boolean {
+        if (!LocationHelper.hasPermission(this)) {
+            Log.w(TAG, "$feature: no location permission")
+            reply("I need location permission for that. Please allow it in DriveBuddy's permissions.")
+            return false
+        }
+        if (!LocationHelper.isLocationOn(this)) {
+            Log.w(TAG, "$feature: location services are off")
+            askYesNo(
+                "Your phone's location is turned off. Should I open the location settings?",
+                onYes = {
+                    reply("Opening location settings. Turn location on, then ask me again.") {
+                        LocationHelper.openSettings(this)
+                    }
+                },
+            )
+            return false
+        }
+        return true
     }
 
     private fun confirmSms(who: Candidate, body: String) {
@@ -575,6 +713,8 @@ class DriveService : Service() {
         main.removeCallbacks(watchdog)
         speaking = false
         pendingAsk = null
+        DriveBus.showChoices(null)
+        DriveBus.choiceTap = null
         answerHandler = null
         log.append(tracker.toJson())
         abandonFocus()

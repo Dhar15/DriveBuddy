@@ -12,6 +12,12 @@ data class DriveUiState(
     val detail: String = ""   // e.g. what was heard, or the error text
 )
 
+/** One line of the "pick one" card on the home screen. */
+data class ChoiceRow(val label: String, val detail: String)
+
+/** The "pick one" card: a title, up to three rows and a hint line. */
+data class ChoiceCard(val title: String, val rows: List<ChoiceRow>, val hint: String, val hasMore: Boolean)
+
 /** Single place the service writes to and the screen listens to. */
 object DriveBus {
     @Volatile
@@ -21,6 +27,28 @@ object DriveBus {
     /** The screen sets this in onResume and clears it in onPause. Always called on the main thread. */
     @Volatile
     var listener: ((DriveUiState) -> Unit)? = null
+
+    /** The card currently on offer, or null. Set by the service, drawn by the home screen. */
+    @Volatile
+    var choices: ChoiceCard? = null
+        private set
+
+    /** Set by the screen like [listener]. Always called on the main thread. */
+    @Volatile
+    var choicesListener: ((ChoiceCard?) -> Unit)? = null
+
+    /** Set by the service while a pick-one card is on offer; the screen calls [tapChoice] when a button is tapped. */
+    @Volatile
+    var choiceTap: ((String) -> Unit)? = null
+
+    fun tapChoice(token: String) {
+        choiceTap?.invoke(token)
+    }
+
+    fun showChoices(card: ChoiceCard?) {
+        choices = card
+        main.post { choicesListener?.invoke(card) }
+    }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
