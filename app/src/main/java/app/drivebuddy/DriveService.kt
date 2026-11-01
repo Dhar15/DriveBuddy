@@ -36,6 +36,8 @@ import app.drivebuddy.audio.AckVoice
 import app.drivebuddy.core.Candidate
 import app.drivebuddy.core.SmsText
 import app.drivebuddy.core.YesNo
+import app.drivebuddy.core.WeatherText
+import kotlin.concurrent.thread
 
 /**
  * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
@@ -298,6 +300,7 @@ class DriveService : Service() {
             is Command.AddTodo -> reply(PhoneControls.listItem(this, command.item, command.list))
             is Command.Note -> reply(PhoneControls.note(this, command.text))
             is Command.Sms -> handleSms(command.name, command.body)
+            Command.Weather -> handleWeather()
         }
     }
 
@@ -450,6 +453,29 @@ class DriveService : Service() {
             is MatchResult.Ambiguous ->
                 reply("I found ${found.candidates.joinToString(" and ") { it.name }}. Please say the full name.")
             MatchResult.None -> reply("I couldn't find $spoken in your contacts.")
+        }
+    }
+
+    private fun handleWeather() {
+        Log.i("DriveBuddy", "weather: asked")
+        if (!LocationHelper.hasPermission(this)) {
+            Log.w("DriveBuddy", "weather: no location permission")
+            reply("I need location permission for the weather. Please allow it in DriveBuddy's permissions.")
+            return
+        }
+        main.removeCallbacks(watchdog) // location + network can outlast the watchdog
+        publish("Checking the weather...")
+        LocationHelper.current(this) { location ->
+            if (location == null) {
+                reply("I couldn't find your location.")
+                return@current
+            }
+            thread(name = "weather") {
+                val weather = WeatherClient.fetch(location.latitude, location.longitude)
+                main.post {
+                    reply(if (weather == null) "I couldn't get the weather right now." else WeatherText.speak(weather))
+                }
+            }
         }
     }
 
