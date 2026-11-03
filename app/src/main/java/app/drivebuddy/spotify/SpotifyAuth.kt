@@ -23,7 +23,7 @@ class SpotifyAuth(context: Context) {
 
         const val PORT = 8888
         const val REDIRECT_URI = "http://127.0.0.1:$PORT/callback"
-        private const val SCOPES = "user-modify-playback-state user-library-read user-read-playback-state"
+        private const val SCOPES = "user-modify-playback-state user-library-read user-read-playback-state playlist-read-private playlist-read-collaborative"
         private const val TOKEN_URL = "https://accounts.spotify.com/api/token"
         private const val TAG = "DriveBuddy"
     }

@@ -29,6 +29,15 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         data class Failed(val why: String) : ArtistResult()
     }
 
+    data class PlaylistRef(val uri: String, val name: String)
+    sealed class PlaylistsResult {
+        data class Ready(val playlists: List<PlaylistRef>) : PlaylistsResult()
+        object Empty : PlaylistsResult()
+        object NeedsPermission : PlaylistsResult()
+        object NotConnected : PlaylistsResult()
+        data class Failed(val why: String) : PlaylistsResult()
+    }
+
     sealed class LikedResult {
         data class Ready(val contextUri: String) : LikedResult()
         object Empty : LikedResult()
@@ -166,6 +175,34 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         } catch (e: JSONException) {
             ArtistResult.Failed("unreadable artist search response")
         }
+    }
+
+    /** The current user's playlists (own and followed), up to 150. Playing one needs only its uri, not its contents. */
+    fun myPlaylists(): PlaylistsResult {
+        val token = auth.accessToken() ?: return PlaylistsResult.NotConnected
+        val found = mutableListOf<PlaylistRef>()
+        var offset = 0
+        while (offset < 150) {
+            val r = call("GET", "$api/me/playlists?limit=50&offset=$offset", token, null)
+            when {
+                r.code == 401 -> return PlaylistsResult.NotConnected
+                r.code == 403 -> return PlaylistsResult.NeedsPermission
+                r.code !in 200..299 -> return PlaylistsResult.Failed("playlists http ${r.code}")
+            }
+            val items = try {
+                JSONObject(r.body).getJSONArray("items")
+            } catch (e: JSONException) {
+                return PlaylistsResult.Failed("unreadable playlists response")
+            }
+            for (i in 0 until items.length()) {
+                val o = items.optJSONObject(i) ?: continue
+                found += PlaylistRef(o.getString("uri"), o.optString("name"))
+            }
+            if (items.length() < 50) break
+            offset += 50
+        }
+        Log.i(tag, "spotify: ${found.size} playlist(s) found")
+        return if (found.isEmpty()) PlaylistsResult.Empty else PlaylistsResult.Ready(found)
     }
 
     /** Checks the Liked Songs exist and the permission is granted, then returns the context to play. */

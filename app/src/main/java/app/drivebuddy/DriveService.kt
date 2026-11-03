@@ -41,6 +41,8 @@ import app.drivebuddy.core.NearbyText
 import app.drivebuddy.core.RankedPlace
 import app.drivebuddy.core.PlaceChoice
 import app.drivebuddy.core.PlayIntent
+import app.drivebuddy.core.TrackCandidate
+import app.drivebuddy.core.TrackPicker
 import kotlin.concurrent.thread
 
 /**
@@ -62,7 +64,7 @@ class DriveService : Service() {
         private const val INTERACTION_TIMEOUT_MS = 15_000L
         private const val SPOTIFY = "com.spotify.music"
         private const val YOUTUBE_MUSIC = "com.google.android.apps.youtube.music"
-        private const val RECONNECT_SPOTIFY = "Spotify isn't connected. Open DriveBuddy and tap Connect Spotify."
+        private const val RECONNECT_SPOTIFY = "Spotify isn't connected. Open Permissions and tap Connect Spotify."
 
         /** Set by the activity so the screen can show status. Always invoked on the main thread. */
         @Volatile
@@ -328,6 +330,8 @@ class DriveService : Service() {
             is PlayIntent.Artist -> { Log.i(TAG, "play: artist request"); playArtist(intent.name); return }
             PlayIntent.Any -> { Log.i(TAG, "play: any song (liked songs, shuffled)"); playLiked(); return }
             is PlayIntent.Song -> Unit
+            is PlayIntent.Playlist -> { Log.i(TAG, "play: my playlist request"); playPlaylist(intent.name); return }
+            PlayIntent.AnyPlaylist -> { Log.i(TAG, "play: any of my playlists"); playPlaylist(null); return }
         }
         publish("Asking Spotify...", DriveState.THINKING)
         // Network calls stay off the main thread. Search first, speak, and only then start the music.
@@ -401,10 +405,44 @@ class DriveService : Service() {
                     main.post { if (!destroyed) announceThenPlayContext(liked.contextUri, "liked songs", "your liked songs") }
                 SpotifyApi.LikedResult.Empty -> main.post { reply("You don't have any liked songs yet.") }
                 SpotifyApi.LikedResult.NeedsPermission ->
-                    main.post { reply("I need one more Spotify permission. Open DriveBuddy and tap Connect Spotify again.") }
+                    main.post { reply("I need one more Spotify permission. Open Permissions and tap Connect Spotify again.") }
                 SpotifyApi.LikedResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
                 is SpotifyApi.LikedResult.Failed -> {
                     Log.w(TAG, "spotify liked songs failed: ${liked.why}")
+                    main.post { reply("I couldn't reach Spotify.") }
+                }
+            }
+        }.start()
+    }
+
+    /** [name] null means "any of my playlists". */
+    private fun playPlaylist(name: String?) {
+        publish("Asking Spotify...", DriveState.THINKING)
+        Thread {
+            main.removeCallbacks(watchdog)
+            when (val result = spotify.myPlaylists()) {
+                is SpotifyApi.PlaylistsResult.Ready -> {
+                    val list = result.playlists
+                    val chosen = if (name == null) {
+                        list.random()
+                    } else {
+                        val i = TrackPicker.best(name, list.map { TrackCandidate(it.name, emptyList(), 0) })
+                        if (i < 0) null else list[i]
+                    }
+                    if (chosen == null) {
+                        Log.i(TAG, "play: no playlist matched among ${list.size}")
+                        main.post { reply("I couldn't find a playlist called $name.") }
+                    } else {
+                        Log.i(TAG, "play: playlist chosen from ${list.size}")
+                        main.post { if (!destroyed) announceThenPlayContext(chosen.uri, chosen.name, "your playlist ${chosen.name}") }
+                    }
+                }
+                SpotifyApi.PlaylistsResult.Empty -> main.post { reply("You don't have any playlists yet.") }
+                SpotifyApi.PlaylistsResult.NeedsPermission ->
+                    main.post { reply("I need one more Spotify permission. Open Permissions and tap Connect Spotify again.") }
+                SpotifyApi.PlaylistsResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
+                is SpotifyApi.PlaylistsResult.Failed -> {
+                    Log.w(TAG, "spotify playlists failed: ${result.why}")
                     main.post { reply("I couldn't reach Spotify.") }
                 }
             }
