@@ -518,9 +518,10 @@ class DriveService : Service() {
                 is PlaceChoice.Pick -> {
                     val r = batch[choice.number - 1]
                     val go = {
-                        if (!actions.navigate("${r.place.latitude},${r.place.longitude}")) {
-                            Log.w(TAG, "nearby: could not start navigation (Google Maps missing?)")
-                        }
+                        startNearbyNavigation(
+                            NearbyText.shortName(r.place.name),
+                            "${r.place.latitude},${r.place.longitude}",
+                        )
                     }
                     if (tapped) {
                         Log.i(TAG, "nearby: navigating to #${choice.number} straight away (tapped)")
@@ -654,6 +655,18 @@ class DriveService : Service() {
                 Log.w(TAG, "navigation to \"$spoken\" could not be started")
             }
         }
+    }
+
+    /** Opens Maps for a picked nearby place and records it as the last trip. */
+    private fun startNearbyNavigation(name: String, query: String): Boolean {
+        val started = actions.navigate(query)
+        if (started) {
+            Log.i(TAG, "navigation started: nearby pick")
+            Journeys.record(this, name, query)
+        } else {
+            Log.w(TAG, "nearby navigation could not be started")
+        }
+        return started
     }
 
     private fun reply(text: String, afterSpeaking: (() -> Unit)? = null) {
