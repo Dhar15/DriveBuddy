@@ -20,6 +20,22 @@ class SpotifyApi(private val auth: SpotifyAuth) {
         val artist: String,
         val albumUri: String
     )
+
+    data class Artist(val uri: String, val name: String)
+    sealed class ArtistResult {
+        data class Found(val artist: Artist) : ArtistResult()
+        object NotFound : ArtistResult()
+        object NotConnected : ArtistResult()
+        data class Failed(val why: String) : ArtistResult()
+    }
+
+    sealed class LikedResult {
+        data class Ready(val contextUri: String) : LikedResult()
+        object Empty : LikedResult()
+        object NeedsPermission : LikedResult()
+        object NotConnected : LikedResult()
+        data class Failed(val why: String) : LikedResult()
+    }
     sealed class SearchResult {
         data class Found(val track: Track) : SearchResult()
         object NotFound : SearchResult()
@@ -97,6 +113,26 @@ class SpotifyApi(private val auth: SpotifyAuth) {
 
     fun play(track: Track, wakeSpotify: () -> Unit): PlayResult {
         val token = auth.accessToken() ?: return PlayResult.NotConnected
+        val id = deviceOrWake(token, wakeSpotify) ?: return PlayResult.NoDevice
+        val body = JSONObject()
+            .put("context_uri", track.albumUri)
+            .put("offset", JSONObject().put("uri", track.uri))
+            .toString()
+
+        Log.i(tag, "spotify: sending play to device ending ${id.takeLast(4)} for \"${track.name}\"")
+        call("PUT", "$api/me/player/shuffle?state=false&device_id=${enc(id)}", token, "")
+        val r = call("PUT", "$api/me/player/play?device_id=${enc(id)}", token, body)
+        return when {
+            r.code in 200..299 -> if (verifyPlaying(token, track)) PlayResult.Started else PlayResult.NotPlaying
+            r.code == 401 -> PlayResult.NotConnected
+            r.code == 403 -> PlayResult.Refused
+            r.code == 404 -> PlayResult.NoDevice
+            else -> PlayResult.Failed("play http ${r.code}: ${r.body}")
+        }
+    }
+
+    /** The phone's Spotify device. If none is listed, opens Spotify and waits up to about 6 seconds for it. */
+    private fun deviceOrWake(token: String, wakeSpotify: () -> Unit): String? {
         var device = phoneDeviceId(token)
         if (device == null) {
             wakeSpotify()
@@ -107,16 +143,60 @@ class SpotifyApi(private val auth: SpotifyAuth) {
                 }
             }
         }
-        val id = device ?: return PlayResult.NoDevice
-        val body = JSONObject()
-            .put("context_uri", track.albumUri)
-            .put("offset", JSONObject().put("uri", track.uri))
-            .toString()
+        return device
+    }
 
-        Log.i(tag, "spotify: sending play to device ending ${id.takeLast(4)} for \"${track.name}\"")
-        val r = call("PUT", "$api/me/player/play?device_id=${enc(id)}", token, body)
+    fun findArtist(spoken: String): ArtistResult {
+        val token = auth.accessToken() ?: return ArtistResult.NotConnected
+        val r = call("GET", "$api/search?q=${enc(spoken)}&type=artist&limit=10", token, null)
+        if (r.code == 401) return ArtistResult.NotConnected
+        if (r.code !in 200..299) return ArtistResult.Failed("artist search http ${r.code}")
+        return try {
+            val items = JSONObject(r.body).getJSONObject("artists").getJSONArray("items")
+            val candidates = (0 until items.length()).map { TrackCandidate(items.getJSONObject(it).getString("name"), emptyList(), 0) }
+            val pick = TrackPicker.best(spoken, candidates)
+            if (pick < 0) {
+                Log.i(tag, "spotify: artist search -> ${candidates.size} results, none matched what was said")
+                ArtistResult.NotFound
+            } else {
+                val a = items.getJSONObject(pick)
+                Log.i(tag, "spotify: artist search -> ${candidates.size} results, picked #${pick + 1} \"${a.getString("name")}\"")
+                ArtistResult.Found(Artist(a.getString("uri"), a.getString("name")))
+            }
+        } catch (e: JSONException) {
+            ArtistResult.Failed("unreadable artist search response")
+        }
+    }
+
+    /** Checks the Liked Songs exist and the permission is granted, then returns the context to play. */
+    fun likedSongs(): LikedResult {
+        val token = auth.accessToken() ?: return LikedResult.NotConnected
+        val t = call("GET", "$api/me/tracks?limit=1", token, null)
+        when {
+            t.code == 401 -> return LikedResult.NotConnected
+            t.code == 403 -> return LikedResult.NeedsPermission
+            t.code !in 200..299 -> return LikedResult.Failed("liked songs http ${t.code}")
+        }
+        return try {
+            if (JSONObject(t.body).optInt("total", 0) == 0) return LikedResult.Empty
+            val me = call("GET", "$api/me", token, null)
+            if (me.code !in 200..299) return LikedResult.Failed("profile http ${me.code}")
+            LikedResult.Ready("spotify:user:${JSONObject(me.body).getString("id")}:collection")
+        } catch (e: JSONException) {
+            LikedResult.Failed("unreadable liked songs response")
+        }
+    }
+
+    /** Starts a whole context (artist, playlist, Liked Songs) with shuffle on. */
+    fun playContext(contextUri: String, label: String, wakeSpotify: () -> Unit): PlayResult {
+        val token = auth.accessToken() ?: return PlayResult.NotConnected
+        val id = deviceOrWake(token, wakeSpotify) ?: return PlayResult.NoDevice
+        val shuffle = call("PUT", "$api/me/player/shuffle?state=true&device_id=${enc(id)}", token, "")
+        Log.i(tag, "spotify: shuffle on -> http ${shuffle.code}")
+        Log.i(tag, "spotify: playing \"$label\" on device ending ${id.takeLast(4)}")
+        val r = call("PUT", "$api/me/player/play?device_id=${enc(id)}", token, JSONObject().put("context_uri", contextUri).toString())
         return when {
-            r.code in 200..299 -> if (verifyPlaying(token, track)) PlayResult.Started else PlayResult.NotPlaying
+            r.code in 200..299 -> PlayResult.Started
             r.code == 401 -> PlayResult.NotConnected
             r.code == 403 -> PlayResult.Refused
             r.code == 404 -> PlayResult.NoDevice

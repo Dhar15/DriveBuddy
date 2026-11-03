@@ -40,6 +40,7 @@ import app.drivebuddy.core.WeatherText
 import app.drivebuddy.core.NearbyText
 import app.drivebuddy.core.RankedPlace
 import app.drivebuddy.core.PlaceChoice
+import app.drivebuddy.core.PlayIntent
 import kotlin.concurrent.thread
 
 /**
@@ -323,6 +324,11 @@ class DriveService : Service() {
             reply(RECONNECT_SPOTIFY)
             return
         }
+        when (val intent = PlayIntent.parse(command.query)) {
+            is PlayIntent.Artist -> { Log.i(TAG, "play: artist request"); playArtist(intent.name); return }
+            PlayIntent.Any -> { Log.i(TAG, "play: any song (liked songs, shuffled)"); playLiked(); return }
+            is PlayIntent.Song -> Unit
+        }
         publish("Asking Spotify...", DriveState.THINKING)
         // Network calls stay off the main thread. Search first, speak, and only then start the music.
         Thread {
@@ -369,9 +375,68 @@ class DriveService : Service() {
         }
     }
 
+    private fun playArtist(name: String) {
+        publish("Asking Spotify...", DriveState.THINKING)
+        Thread {
+            main.removeCallbacks(watchdog)
+            when (val found = spotify.findArtist(name)) {
+                is SpotifyApi.ArtistResult.Found ->
+                    main.post { if (!destroyed) announceThenPlayContext(found.artist.uri, found.artist.name, "songs by ${found.artist.name}") }
+                SpotifyApi.ArtistResult.NotFound -> main.post { reply("I couldn't find an artist called $name on Spotify.") }
+                SpotifyApi.ArtistResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
+                is SpotifyApi.ArtistResult.Failed -> {
+                    Log.w(TAG, "spotify artist search failed: ${found.why}")
+                    main.post { reply("I couldn't reach Spotify.") }
+                }
+            }
+        }.start()
+    }
+
+    private fun playLiked() {
+        publish("Asking Spotify...", DriveState.THINKING)
+        Thread {
+            main.removeCallbacks(watchdog)
+            when (val liked = spotify.likedSongs()) {
+                is SpotifyApi.LikedResult.Ready ->
+                    main.post { if (!destroyed) announceThenPlayContext(liked.contextUri, "liked songs", "your liked songs") }
+                SpotifyApi.LikedResult.Empty -> main.post { reply("You don't have any liked songs yet.") }
+                SpotifyApi.LikedResult.NeedsPermission ->
+                    main.post { reply("I need one more Spotify permission. Open DriveBuddy and tap Connect Spotify again.") }
+                SpotifyApi.LikedResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
+                is SpotifyApi.LikedResult.Failed -> {
+                    Log.w(TAG, "spotify liked songs failed: ${liked.why}")
+                    main.post { reply("I couldn't reach Spotify.") }
+                }
+            }
+        }.start()
+    }
+
+    /** Speaks first, then starts the shuffled context, like announceThenPlay does for a single track. */
+    private fun announceThenPlayContext(uri: String, label: String, spoken: String) {
+        reply("Playing $spoken, shuffled.") {
+            Thread {
+                val problem = failureText(spotify.playContext(uri, label) { actions.openApp(SPOTIFY) })
+                if (problem != null) main.post { speakLate(problem) }
+            }.start()
+        }
+    }
+
     /** Runs on a background thread. Returns what to say if playback did not start, or null when it did. */
     private fun spotifyFailureMessage(track: SpotifyApi.Track): String? =
         when (val played = spotify.play(track) { actions.openApp(SPOTIFY) }) {
+            SpotifyApi.PlayResult.Started -> null
+            SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
+            SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
+            SpotifyApi.PlayResult.NotPlaying -> "Spotify accepted it but didn't start playing. Please try again."
+            SpotifyApi.PlayResult.Refused -> "Spotify refused to play. Check that Premium is active."
+            is SpotifyApi.PlayResult.Failed -> {
+                Log.w(TAG, "spotify play failed: ${played.why}")
+                "Spotify didn't respond."
+            }
+        }
+
+    private fun failureText(played: SpotifyApi.PlayResult): String? =
+        when (played) {
             SpotifyApi.PlayResult.Started -> null
             SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
             SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
