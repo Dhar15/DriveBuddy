@@ -9,6 +9,7 @@ import java.net.URL
 import java.net.URLEncoder
 import app.drivebuddy.core.TrackCandidate
 import app.drivebuddy.core.TrackPicker
+import app.drivebuddy.core.SongQuery
 
 class SpotifyApi(private val auth: SpotifyAuth) {
 
@@ -41,8 +42,18 @@ class SpotifyApi(private val auth: SpotifyAuth) {
     private val tag = "DriveBuddy"
 
     fun search(query: String): SearchResult {
+        val precise = SongQuery.build(query)
+        if (precise != null) {
+            val first = searchWith(precise, query)
+            if (first !is SearchResult.NotFound) return first
+            Log.i(tag, "spotify: precise search found nothing, trying the plain words")
+        }
+        return searchWith(query, query)
+    }
+
+    private fun searchWith(q: String, spoken: String): SearchResult {
         val token = auth.accessToken() ?: return SearchResult.NotConnected
-        val r = call("GET", "$api/search?q=${enc(query)}&type=track&limit=10", token, null)
+        val r = call("GET", "$api/search?q=${enc(q)}&type=track&limit=10", token, null)
         if (r.code == 401) return SearchResult.NotConnected
         if (r.code !in 200..299) return SearchResult.Failed("search http ${r.code}")
         return try {
@@ -59,8 +70,12 @@ class SpotifyApi(private val auth: SpotifyAuth) {
                         popularity = t.optInt("popularity", 0),
                     )
                 }
-                val pick = TrackPicker.best(query, candidates)
-                Log.i(tag, "spotify: search \"$query\" -> ${candidates.size} results, picked #${pick + 1} " +
+                val pick = TrackPicker.best(spoken, candidates)
+                if (pick < 0) {
+                    Log.i(tag, "spotify: search \"$q\" -> ${candidates.size} results, none matched what was said")
+                    return SearchResult.NotFound
+                }
+                Log.i(tag, "spotify: search \"$q\" -> ${candidates.size} results, picked #${pick + 1} " +
                         "\"${candidates[pick].name}\" by ${candidates[pick].artists.firstOrNull()}; " +
                         "Spotify's first was \"${candidates[0].name}\"")
                 val t = items.getJSONObject(pick)
