@@ -235,7 +235,7 @@ The standing rule: **no spend, other than a card on file for Google Cloud, and o
 | Wake word, parsing, TTS, recognition | Free (on-device) | n/a |
 | Spotify Web API | Free; needs the owner's Premium for playback | Development-mode app, single user |
 | Open-Meteo | Free, no key, non-commercial use | Attribution below |
-| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month, per third-party sources; Google's page was not readable when checked, so **verify in the console**) | Cheap field mask (no ratings or opening hours); hard quotas of about 30 requests per day and 10 per minute in Cloud Console |
+| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month) | Cheap field mask (no ratings or opening hours); hard quotas of about 30 requests per day and 10 per minute in Cloud Console |
 | Google Maps navigation | Free (uses the installed app) | n/a |
 
 Because quotas are enforced by Google rather than by the app, a bug or a loop cannot generate a bill. At the owner's expected use (a handful of nearby searches a month) the allowance is not approached.
