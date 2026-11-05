@@ -17,6 +17,8 @@ sealed class Command {
     object Empty : Command()
     object Stop : Command()
     object Weather : Command()
+    object Time : Command()
+    object Date : Command()
     /** "find a petrol pump near me", "nearest atm" ... [what] is the thing to search for. */
     data class Nearby(val what: String) : Command()
     data class Call(val name: String) : Command()
@@ -86,6 +88,14 @@ object CommandParser {
                 "should i (?:take|carry|bring) (?:an |a )?umbrella)" +
                 "(?: (?:today|now|outside|right now|here|currently|at the moment|near me|nearby|around here))?$"
     )
+
+    private val timeRule = Regex(
+        "^(?:what(?:'s|s| is) the (?:current )?time|what time is it|tell me the time|(?:the )?current time)(?: right now| now| please)?$"
+    )
+    private val dateRule = Regex(
+        "^(?:what(?:'s|s| is) (?:the |today's |todays )?(?:date|day)(?: today)?|what day is it(?: today)?|" +
+                "what date is it(?: today)?|what is today|what's today|whats today|tell me the date)(?: please)?$"
+    )
     private val playRule = Regex("^play (.+?)(?: on (spotify|youtube music))?$")
 
     fun parse(raw: String): Command {
@@ -109,6 +119,8 @@ object CommandParser {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
         if (weatherRule.matches(core)) return Command.Weather
+        if (timeRule.matches(core)) return Command.Time
+        if (dateRule.matches(core)) return Command.Date
         parseSms(core)?.let { return it }
         parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }

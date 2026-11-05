@@ -25,6 +25,8 @@ class WakeWord(
         const val THRESHOLD = 0.7f
         /** Frames (80 ms each) at or above THRESHOLD needed before waking. One lone frame is usually a false alarm. */
         private const val PATIENCE = 2
+        /** One frame at least this strong wakes on its own. Every real "Hi Oreo" so far peaked at 0.85 or more; noise stayed under 0.8. */
+        private const val STRONG = 0.85f
         /** A frame scoring below this restarts the count. */
         private const val RESET_BELOW = 0.3f
         /** The loudest sample in the last second must reach this, so near-silence can never wake us. */
@@ -146,7 +148,7 @@ class WakeWord(
                 }
                 if (score >= THRESHOLD) {
                     hits++
-                    if (hits >= PATIENCE) {
+                    if (hits >= PATIENCE || score >= STRONG) {
                         val loudness = recentPeaks.max()
                         if (loudness >= MIN_LOUDNESS) {
                             Log.i(tag, "wake word detected, score ${"%.2f".format(score)} after $hits frames, loudness $loudness")

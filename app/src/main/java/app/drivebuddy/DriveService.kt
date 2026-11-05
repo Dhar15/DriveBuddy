@@ -44,6 +44,11 @@ import app.drivebuddy.core.PlayIntent
 import app.drivebuddy.core.TrackCandidate
 import app.drivebuddy.core.TrackPicker
 import app.drivebuddy.core.BuddyChat
+import app.drivebuddy.core.TimeText
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.TextStyle
+import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
@@ -328,6 +333,17 @@ class DriveService : Service() {
             is Command.Sms -> handleSms(command.name, command.body)
             is Command.Nearby -> handleNearby(command.what)
             Command.Weather -> handleWeather()
+            Command.Time -> { val now = LocalTime.now(); reply(TimeText.time(now.hour, now.minute)) }
+            Command.Date -> {
+                val today = LocalDate.now()
+                reply(
+                    TimeText.date(
+                        today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.ENGLISH),
+                        today.dayOfMonth,
+                        today.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH),
+                    )
+                )
+            }
         }
     }
 
