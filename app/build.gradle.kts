@@ -25,6 +25,7 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
         buildConfigField("String", "MAPS_API_KEY", "\"${localProps.getProperty("MAPS_API_KEY", "")}\"")
+        buildConfigField("String", "GROQ_API_KEY", "\"${localProps.getProperty("GROQ_API_KEY", "")}\"")
     }
 
     buildTypes {

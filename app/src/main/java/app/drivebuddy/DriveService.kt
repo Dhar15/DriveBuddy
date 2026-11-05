@@ -43,6 +43,7 @@ import app.drivebuddy.core.PlaceChoice
 import app.drivebuddy.core.PlayIntent
 import app.drivebuddy.core.TrackCandidate
 import app.drivebuddy.core.TrackPicker
+import app.drivebuddy.core.BuddyChat
 import kotlin.concurrent.thread
 
 /**
@@ -99,12 +100,23 @@ class DriveService : Service() {
     private var pendingAsk: Ask? = null                 // a question we are about to ask or have just asked
     private var answerHandler: ((String) -> Unit)? = null // set while we are listening for the answer
 
+    private val buddy = BuddyChat(maxExchanges = 8)
+    private var inChat = false // true from the first buddy reply until the conversation ends
+    private lateinit var llm: LlmClient
+    private lateinit var quota: ChatQuota
+
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
         Log.w(TAG, "interaction timed out after $INTERACTION_TIMEOUT_MS ms")
         answerHandler = null
         capture.destroy()
         tracker.sttEngine = capture.engineName
+        if (inChat) {
+            Log.i(TAG, "chat: the driver went quiet, ending the conversation")
+            tracker.command = "chat: ended on silence"
+            finishInteraction()
+            return@Runnable
+        }
         tracker.command = "error: timeout"
         reply("Sorry, I didn't catch that.")
     }
@@ -118,6 +130,8 @@ class DriveService : Service() {
         anchor = OverlayAnchor(this)
         spotifyAuth = SpotifyAuth(this)
         spotify = SpotifyApi(spotifyAuth)
+        llm = LlmClient()
+        quota = ChatQuota(this)
         cue = Cue()
         ackVoice = AckVoice(this)
         speaker = Speaker(this)
@@ -270,6 +284,12 @@ class DriveService : Service() {
                 tracker.command = "error: $message"
                 Log.w(TAG, "recognition failed: $message (engine=${capture.engineName})")
                 val noInternet = message.contains("network") || message.contains("server")
+                if (inChat && !noInternet) {
+                    Log.i(TAG, "chat: the driver went quiet, ending the conversation")
+                    tracker.command = "chat: ended on silence"
+                    finishInteraction()
+                    return
+                }
                 reply(
                     if (noInternet) "I can't reach the speech service. Please check your internet connection."
                     else "Sorry, I didn't catch that."
@@ -286,7 +306,7 @@ class DriveService : Service() {
         when (command) {
             is Command.Empty -> reply("I didn't catch that.")
             is Command.Stop -> reply("Okay.")
-            is Command.Echo -> reply("You said: ${command.text}")
+            is Command.Echo -> handleChat(command.text)
             is Command.Media -> when {
                 actions.mediaControl(command.action) -> reply("Okay.")
                 !actions.hasNotificationAccess() -> reply("I need notification access to control music.")
@@ -704,6 +724,80 @@ class DriveService : Service() {
         }
     }
 
+    /** Anything the parser doesn't recognise becomes a chat with the buddy. */
+    private fun handleChat(text: String) {
+        if (!quota.canUse()) {
+            Log.i(TAG, "chat: daily allowance used up")
+            reply("I've used up my chatting for today. Try again tomorrow.")
+            return
+        }
+        inChat = true
+        buddy.reset() // a new wake-up starts a new conversation
+        askBuddy(text)
+    }
+
+    private fun askBuddy(text: String) {
+        Log.i(TAG, "chat: sending to the buddy (${buddy.exchanges} earlier exchanges)")
+        buddy.addUser(text)
+        publish("Thinking...", DriveState.THINKING)
+        main.removeCallbacks(watchdog) // the network call has its own timeouts
+        quota.record()
+        Thread {
+            val result = llm.chat(buddy.messages())
+            main.post {
+                if (destroyed) return@post
+                when (result) {
+                    is LlmClient.Result.Reply -> {
+                        val spoken = BuddyChat.tidy(result.text)
+                        if (spoken.isEmpty()) {
+                            reply("Hmm, I'm lost for words.")
+                        } else {
+                            buddy.addAssistant(spoken)
+                            if (buddy.canContinue) {
+                                ask(spoken) { heard -> onChatAnswer(heard) } // speaks it, then listens for the driver's answer
+                            } else {
+                                Log.i(TAG, "chat: reached the end of this conversation")
+                                reply(spoken)
+                            }
+                        }
+                    }
+                    LlmClient.Result.NotConfigured -> reply("My chat brain isn't set up yet.")
+                    LlmClient.Result.RateLimited -> reply("I'm out of chat for the moment. Try again in a minute.")
+                    LlmClient.Result.Offline -> reply("I can't reach my chat brain. Please check your internet connection.")
+                    is LlmClient.Result.Failed -> {
+                        Log.w(TAG, "chat: failed: ${result.why}")
+                        reply("Sorry, I couldn't think of anything.")
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** The driver spoke again during a chat: goodbye, a real command, or more conversation. */
+    private fun onChatAnswer(heard: String) {
+        when {
+            heard.isBlank() -> {
+                Log.i(TAG, "chat: nothing heard, ending the conversation")
+                finishInteraction()
+            }
+            BuddyChat.isGoodbye(heard) -> {
+                Log.i(TAG, "chat: the driver ended the conversation")
+                reply("Anytime.")
+            }
+            else -> {
+                val command = CommandParser.parse(heard)
+                if (command is Command.Echo) {
+                    askBuddy(heard)
+                } else {
+                    Log.i(TAG, "chat: a real command came up mid-chat, running it")
+                    inChat = false // a command's own follow-ups should behave normally
+                    buddy.reset()
+                    respond(command)
+                }
+            }
+        }
+    }
+
     /** True when location can be read. Otherwise it says (or asks) what to fix and returns false. */
     private fun locationReady(feature: String): Boolean {
         if (!LocationHelper.hasPermission(this)) {
@@ -828,6 +922,7 @@ class DriveService : Service() {
     private fun finishInteraction() {
         main.removeCallbacks(watchdog)
         speaking = false
+        inChat = false
         pendingAsk = null
         DriveBus.showChoices(null)
         DriveBus.choiceTap = null
