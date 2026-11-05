@@ -98,15 +98,14 @@ Every stage is timed by a latency tracker and written to the log, so a slow inte
 
 ---
 
-```markdown
-## Architecture
+### Architecture
 
 The diagram below illustrates DriveBuddy's system architecture,
 including its core Android components, voice interaction pipeline,
 external APIs, and integrations.
 
 ![DriveBuddy System Architecture](docs/drivebuddy_architecture.png)
-```
+
 
 ### Main components
 
