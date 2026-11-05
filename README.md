@@ -1,6 +1,6 @@
 # DriveBuddy
 
-**A hands-free voice buddy for the driver's seat.** Say "Hi Oreo", get an instant spoken acknowledgement, and ask for what you need: navigate, call, text, play music, set a timer, find a petrol pump. All without touching the phone, and without opening the app.
+**A hands-free voice buddy for the driver's seat.** Say "Hi Oreo", get an instant spoken acknowledgement, and ask for what you need: navigate, call, text, play music, set a timer, find a petrol pump, or just have a chat. All without touching the phone, and without opening the app.
 
 Built for one phone (OnePlus Nord 5, Android 15) and one driver, in Kotlin. Open-source parts wherever possible, no paid services, no backend of its own.
 
@@ -63,8 +63,10 @@ Phrases below are examples; the parser accepts natural variations.
 | **App launching** | "Open WhatsApp" | Fuzzy matching on installed apps. Works on a locked phone |
 | **Phone controls** | "Flashlight on", "Do not disturb on" | Camera torch and notification-policy APIs |
 | **Weather** | "What's the weather?" | Open-Meteo, from your location |
+| **Time and date** | "What's the time?", "What day is it?" | Read from the phone's clock, spoken in plain words |
 | **Nearby places** | "Find a petrol pump near me" | Google Places search, nearest three on a full-screen picker (tap or say 1, 2, 3, "more", "cancel"), then navigate |
 | **Follow-up questions** | Any "which one?" or "shall I send it?" | The assistant listens again without needing the wake word |
+| **Chat with Oreo** | "Tell me a joke", "How's it going?", or anything not covered above | Anything the rules don't recognise becomes a short spoken conversation with a free LLM (Groq). It keeps listening without the wake word; end it with "thanks" or "that's all", or stay quiet. A real command said mid-chat still runs normally |
 
 Interruption works too: tap the orb while it is speaking and it stops and listens.
 
@@ -85,7 +87,8 @@ transcript ──► CommandParser (pure Kotlin, rule-based) ──► Command
 DriveService.respond(command)
    ├─ speaks a reply (TTS, with audio focus)
    ├─ then performs the action (Maps, call, Spotify, …)
-   └─ or asks a follow-up and listens again
+   ├─ or asks a follow-up and listens again
+   └─ or, for anything unrecognised, chats with the buddy (Groq LLM) and keeps listening
    │
    ▼
 finishInteraction: log latency, resume music if appropriate, resume wake-word listening
@@ -112,12 +115,14 @@ flowchart TD
         SVC --> ACT[PhoneActions / PhoneControls<br/>intents and system APIs]
         SVC --> SP[SpotifyApi + SpotifyAuth<br/>PKCE, encrypted tokens]
         SVC --> NB[NearbyClient / WeatherClient]
+        SVC --> LLM[LlmClient + BuddyChat<br/>catch-all conversation]
         ACT --> APPS[Maps · Dialler · Calendar · Keep · Clock]
         MEDIA[MediaListener<br/>notification listener] --> ACT
     end
     SP --> SPAPI[(Spotify Web API)]
     NB --> PLACES[(Google Places API New)]
     NB --> METEO[(Open-Meteo)]
+    LLM --> GROQ[(Groq API)]
 ```
 
 ### Main components
@@ -133,6 +138,7 @@ flowchart TD
 | `PhoneActions`, `PhoneControls` | Calls, SMS, navigation, app launch, torch, DND, timer, alarm, note, reminder, volume, media control |
 | `spotify/*` | OAuth with PKCE, encrypted token vault, search, playback, playlist and library reads |
 | `NearbyClient`, `WeatherClient`, `LocationHelper` | Network lookups and location |
+| `LlmClient`, `ChatQuota` | One call to Groq's chat endpoint, and a per-day allowance kept on the phone |
 | `OverlayAnchor` | A tiny overlay window so Maps and Spotify may be opened from the background |
 | `MediaListener` | Notification-listener service giving access to active media sessions |
 | `DriveState`, `DriveBus` | UI state, choice cards and tap events, shared between service and screen |
@@ -147,7 +153,7 @@ flowchart TD
 ### Wake word
 - **Pipeline:** openWakeWord's `melspectrogram.onnx` → `embedding_model.onnx` → a custom-trained `hi_oreo.onnx`, run with `onnxruntime-android`.
 - **Why custom:** off-the-shelf engines struggled with the owner's accent and with music playing in the car. A purpose-trained model for "Hi Oreo" fired on the first attempt.
-- **False-trigger control:** threshold 0.7, patience of 2 consecutive frames, plus a loudness check. The word "Oreo" alone can still trigger it (a conscious choice to leave it).
+- **False-trigger control:** a frame scoring 0.7 or more must repeat for two frames in a row (80 ms each), **or** one frame must reach 0.85, with a loudness check on top so near-silence can never wake it. The strong-frame rule exists because real wake-ups sometimes produce a single strong frame instead of two (seen in the logs); every real wake-up so far peaked at 0.85 or more, while every noise burst stayed under 0.8. The word "Oreo" alone can still trigger it (a conscious choice to leave it).
 - **Why not Bluetooth or a button:** the car has neither, so the wake word is the only hands-free trigger. The power button is deliberately untouched.
 
 ### Always-on, no app open
@@ -162,10 +168,22 @@ flowchart TD
 - **Watchdog:** a 15-second timer ends any interaction the recogniser never answers. Long network operations (location, search, Spotify wake-up) cancel it and own their own limits.
 
 ### Command understanding
-- **Rule-based and on-device.** `CommandParser` turns a transcript into a sealed `Command`. No cloud language model is involved, so latency is near zero and nothing about what you say is sent anywhere for interpretation.
-- **Order matters.** Stop phrases → media → play → call → navigate → weather → SMS → memory (notes, lists, reminders) → on/off switches → clock → open app → nearby → volume → echo. Music titles are matched before generic phrases so a song called "Turn Down for What" still plays.
+- **Rule-based and on-device.** `CommandParser` turns a transcript into a sealed `Command`. Commands are never interpreted by a cloud model, so they stay near-instant and private. Only what the rules do not recognise goes to the [chat buddy](#chat-buddy).
+- **Order matters.** Stop phrases → media → play → call → navigate → weather → time and date → SMS → memory (notes, lists, reminders) → on/off switches → clock → open app → nearby → volume → chat buddy (the catch-all that used to just echo what you said). Music titles are matched before generic phrases so a song called "Turn Down for What" still plays.
 - **Play requests** go through `PlayIntent`, which distinguishes a named song, an artist, "any song", a named playlist, and "any playlist", checking playlist phrases before artist phrases.
-- **Matching helpers:** `NameMatcher` (contacts), `AppMatcher` (installed apps), `TrackPicker` (search results), `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `SongQuery`.
+- **Matching helpers:** `NameMatcher` (contacts), `AppMatcher` (installed apps), `TrackPicker` (search results), `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `SongQuery`, `TimeText`, `BuddyChat`, `DailyCap`.
+
+### Chat buddy
+Anything the rules do not recognise becomes a conversation with **Oreo** instead of an echo.
+
+- **Where it plugs in:** only the old catch-all branch. Every recognised command takes exactly the path it always did, so nothing else can regress.
+- **Model:** Groq's `openai/gpt-oss-20b` at low reasoning effort (up to 400 completion tokens; the spoken answer is kept to a couple of sentences by the prompt). Replies come back in roughly half a second to two seconds. A first choice, `llama-3.3-70b-versatile`, turned out to be retired on free tiers on 16 August 2026, which is why the model name lives in one constant in `LlmClient`.
+- **It talks but never acts.** The system prompt states it cannot play music, navigate, call, text, set timers or open apps, and cannot see the phone, location, weather or traffic. If asked, it tells the driver what to say instead ("try saying: set a timer for ten minutes"). This prevents "Done, I've set it" when nothing happened.
+- **Written for speech:** one or two plain sentences, no lists, markdown or emoji. `BuddyChat.tidy` strips symbols and trims long replies at a sentence end.
+- **Garbled input:** the speech recogniser sometimes mishears, so the prompt tells the model to ask for a repeat when a sentence makes no sense. (For example, "what's up" is sometimes heard as "WhatsApp"; this is left as is.)
+- **Conversation mode:** after each reply the service listens again with no wake word, using the same follow-up mechanism as SMS confirmation. The buddy remembers the last six messages. A conversation ends on "thanks" or "that's all", on silence (quietly, with no "sorry, I didn't catch that"), after eight exchanges, or when the driver taps to interrupt. A real command said mid-chat (for example "set a timer for 2 minutes") runs normally and ends the chat.
+- **Limits and failures:** a daily cap of 100 chats (`ChatQuota` and the pure `DailyCap`), so a bug cannot burn the free allowance. Offline, rate-limited, key and server errors each get a short spoken explanation, and the log carries the provider's own error text.
+- **What is sent:** only the unrecognised sentence and the last few chat messages. Never contacts, location, or anything from a recognised command.
 
 ### Choosing the right song
 Spotify's top search result is a popularity-weighted guess, and since February 2026 its API no longer returns popularity at all. DriveBuddy therefore:
@@ -211,15 +229,16 @@ Only small things, all on the phone: encrypted Spotify tokens, saved places (JSO
 | Spotify Web API | Search text, playback commands, your token | Music requests |
 | Google Places API | The place type you asked for and your coordinates | "Find … near me" |
 | Open-Meteo | Your coordinates, rounded to about 1 km | "What's the weather?" |
+| Groq (chat) | Only the sentence DriveBuddy did not recognise, plus the last few chat messages. No contacts, location or message content | Chatting with Oreo |
 | Google Maps | The destination | Navigation (via the Maps app, not DriveBuddy) |
 
 There is no DriveBuddy server, no analytics SDK and no account.
 
 ### Safeguards
 - **Wake-word audio stays on the phone.** Detection is fully on-device.
-- **Secrets stay out of git.** The Maps/Places key lives in `local.properties` (git-ignored) and reaches the app through `BuildConfig.MAPS_API_KEY`. The Spotify client ID is committed on purpose: with PKCE it is not a secret.
+- **Secrets stay out of git.** The Maps/Places key lives in `local.properties` (git-ignored) and reaches the app through `BuildConfig.MAPS_API_KEY`. The Groq chat key is handled the same way (`GROQ_API_KEY`). The Spotify client ID is committed on purpose: with PKCE it is not a secret.
 - **Tokens encrypted at rest** with a hardware-backed Keystore key.
-- **Logs never contain** phone numbers, message text or addresses. Contact names, search text and place names may appear, since the app is single-user and the log is the owner's.
+- **Logs never contain** phone numbers or coordinates. Spoken text is logged as spoken, so contact names, search text, destinations, texts read back for confirmation and chat replies can appear, since the app is single-user and the log is the owner's. Redacting those is on the roadmap.
 - **Confirmation before sending** any text message.
 - **Least privilege:** each permission exists for a named feature (see [Permissions](#permissions)); permissions are requested on first run and can be re-toggled from Settings.
 - **Locked-phone policy:** calls, texts and app launching deliberately keep working on a locked phone, because that is exactly when you are driving.
@@ -230,13 +249,14 @@ There is no DriveBuddy server, no analytics SDK and no account.
 
 The standing rule: **no spend, other than a card on file for Google Cloud, and only while usage stays inside free limits.**
 
-| Piece | Cost | Control |
-|---|---|---|
-| Wake word, parsing, TTS, recognition | Free (on-device) | n/a |
-| Spotify Web API | Free; needs the owner's Premium for playback | Development-mode app, single user |
-| Open-Meteo | Free, no key, non-commercial use | Attribution below |
-| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month) | Cheap field mask (no ratings or opening hours); hard quotas of about 30 requests per day and 10 per minute in Cloud Console |
-| Google Maps navigation | Free (uses the installed app) | n/a |
+| Piece | Cost                                                                        | Control                                                                                                                     |
+|---|-----------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| Wake word, parsing, TTS, recognition | Free (on-device)                                                            | N/A                                                                                                                         |
+| Spotify Web API | Free; needs the owner's Premium for playback                                | Development-mode app, single user                                                                                           |
+| Open-Meteo | Free, no key, non-commercial use                                            | Attribution below                                                                                                           |
+| Groq (chat LLM) | Free tier, no card (limits change often, so **verify in the Groq console**) | An in-app cap of 100 chats a day, and the provider's own rate limit                                                         |
+| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month*)           | Cheap field mask (no ratings or opening hours); hard quotas of about 30 requests per day and 10 per minute in Cloud Console |
+| Google Maps navigation | Free (uses the installed app)                                               | N/A                                                                                                                         |
 
 Because quotas are enforced by Google rather than by the app, a bug or a loop cannot generate a bill. At the owner's expected use (a handful of nearby searches a month) the allowance is not approached.
 
@@ -263,7 +283,9 @@ A **personal-use, portfolio-grade** assistant. It is not a public product and ha
 ### Scope decisions (and why)
 | Decision | Reason |
 |---|---|
-| Rule-based parser, not a cloud LLM | Zero latency, zero cost, private; the command set is bounded |
+| Rule-based parser for commands; an LLM only for what the rules don't recognise | Commands stay instant, free and private; unrecognised talk gets a conversation instead of an echo |
+| The chat buddy cannot take actions | Prevents false "done" claims; it suggests the phrase to say instead |
+| Groq with `openai/gpt-oss-20b` for chat | Free, no card, fast, and no training on conversations. Gemini's free tier trains on data outside the EU/UK/EEA, and on-device Gemini Nano is blocked for background use |
 | Spotify Web API over search-intent launching | Intents opened search but did not play; hands-free playback was a major requirement |
 | Open-Meteo over reading the OnePlus Weather app | Works on any phone; reading another app's data was judged overkill |
 | Calendar for reminders, Keep for notes | No second memory store to maintain; the phone's own apps already sync |
@@ -279,6 +301,7 @@ A **personal-use, portfolio-grade** assistant. It is not a public product and ha
 | Android restricts background microphone or activity launches further | Assistant role plus overlay anchor; service designed to restart cleanly |
 | Recogniser mishears names and titles | Fuzzy matching, refuse-on-no-match, confirm-by-voice; recogniser hint phrases planned |
 | Google pricing or free allowance changes | Hard quotas in the console, cheap field mask, a single client class |
+| Free LLM models get retired (Groq retired its Llama models on free tiers on 16 Aug 2026) | One small client class, the model name in one constant, and errors logged with the provider's own message |
 | Battery and always-on microphone | Wake-word model is small and runs on one background thread; sessions can be ended from the home screen |
 | Distraction while driving | Short spoken replies, large tap targets, voice-first flows |
 
@@ -290,19 +313,20 @@ A **personal-use, portfolio-grade** assistant. It is not a public product and ha
 - **Levels:** `i` for flow milestones (state changes, transcripts, decisions), `d` for detail, `w` for recoverable problems, `e` for failures.
 - **Every interaction** logs: trigger, state transitions, transcript and engine, routed command, spoken reply, action result, and (for Spotify) the HTTP status of each call plus a player check after playback.
 - **A latency tracker** timestamps trigger, listening, speech end, ack, final transcript, routing and speech start/finish, and appends a JSON line per interaction so slow stages are obvious.
-- **Never logged:** phone numbers, message bodies, addresses.
+- **Not logged by design:** phone numbers and coordinates. Spoken replies are logged as spoken (see the privacy section).
+- **Chat turns** log how many earlier exchanges there were, the day's count, the provider's response time and the reply length. Failures include the provider's own error text.
 
 ---
 
 ## Testing
 
-Everything that can be Android-free is, so it can be unit-tested on the JVM: `CommandParser`, `PlayIntent`, `SongQuery`, `TrackPicker`, `NameMatcher`, `AppMatcher`, `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `Pkce`.
+Everything that can be Android-free is, so it can be unit-tested on the JVM: `CommandParser`, `PlayIntent`, `SongQuery`, `TrackPicker`, `NameMatcher`, `AppMatcher`, `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `TimeText`, `BuddyChat`, `DailyCap`, `Pkce`.
 
 ```
 ./gradlew test
 ```
 
-Anything involving the microphone, Maps, Spotify, location or the lock screen is tested by hand on the device, driven by the log lines described above. A recommended manual checklist before a drive: wake from locked screen; "navigate to home"; "call" a contact; send a text; play a named song, an artist, "any song", a playlist; "stop"; a nearby search with a tap and with a spoken pick.
+Anything involving the microphone, Maps, Spotify, location or the lock screen is tested by hand on the device, driven by the log lines described above. A recommended manual checklist before a drive: wake from locked screen; "navigate to home"; "call" a contact; send a text; play a named song, an artist, "any song", a playlist; "stop"; a nearby search with a tap and with a spoken pick; "what's the time"; a chat that continues without the wake word and ends on "thanks", on silence and on a command said mid-chat.
 
 ---
 
@@ -311,9 +335,10 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 **Requirements:** Android Studio, a physical Android 15 phone (the wake word and assistant role cannot be tested on an emulator), Spotify Premium for music.
 
 1. **Clone** the repo and open it in Android Studio.
-2. **Maps / Places key.** Create a Google Cloud project, enable *Places API (New)*, add a billing card, create an API key restricted to your app and that API, and set quotas (about 30 `SearchText` requests per day and 10 per minute). Then add to `local.properties` (never commit it):
+2. **Maps / Places and chat keys.** Create a Google Cloud project, enable *Places API (New)*, add a billing card, create an API key restricted to your app and that API, and set quotas (about 30 `SearchText` requests per day and 10 per minute). Then add to `local.properties` (never commit it). The second line is the free Groq key for the chat buddy, created at console.groq.com; both are exposed as `BuildConfig` fields by `app/build.gradle.kts`:
    ```
    MAPS_API_KEY=your_key_here
+   GROQ_API_KEY=your_key_here
    ```
 3. **Spotify.** Create an app in the Spotify Developer Dashboard, add your account as a user, set the redirect URI used in `SpotifyAuth`, and put the **client ID** in the code (PKCE needs no secret).
 4. **Wake-word models.** Place `melspectrogram.onnx`, `embedding_model.onnx` and your trained `hi_oreo.onnx` in the app's assets. The training notebook used for the custom model is included in the project notes.
@@ -340,7 +365,7 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 | Notification-listener access | Controlling the active media session (pause, next, resume) |
 | Do Not Disturb access | Toggling DND |
 | Set alarm | Timers and alarms through the Clock app |
-| Internet | Spotify, Places, Open-Meteo |
+| Internet | Spotify, Places, Open-Meteo, chat (Groq) |
 | Kill background processes | Closing apps when a session ends |
 
 ---
@@ -354,6 +379,9 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 - The recogniser sometimes mishears names and Hindi titles; DriveBuddy refuses to play a non-match rather than guess.
 - "Oreo" on its own can trigger the wake word.
 - The spoken three-place read-out is long (about 20 seconds); tapping a card cuts it short.
+- The chat buddy is only as good as a small free model: it can be wrong, it cannot take actions, it is limited to 100 chats a day and eight exchanges per conversation, and it needs internet.
+- The speech recogniser can mishear casual phrases (for example "what's up" as "WhatsApp"); the chat simply answers what it was given.
+- Free LLM models can be retired by the provider without much notice (it has already happened once during this project).
 - English only.
 
 ---
@@ -368,7 +396,8 @@ Next, roughly in order:
 4. **Stop navigation** by voice (best effort).
 5. **Recogniser hint phrases** built from your artists, playlists and contacts.
 6. **Traffic, ETA and places along the route** with minimal detour (Google Routes API; free allowance and quota cap to be checked first).
-7. **Housekeeping:** shorter spoken place list, tidier nearby-search label, remove leftover probe code, scan git history for secrets.
+7. **Housekeeping:** shorter spoken place list, tidier nearby-search label, remove leftover probe code, scan git history for secrets, and stop writing text-message bodies and chat replies into the log.
+8. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
 
 ---
 
@@ -377,6 +406,7 @@ Next, roughly in order:
 - **Wake word:** [openWakeWord](https://github.com/dscripka/openWakeWord) (code under Apache 2.0). Check the licence of every model file you ship, including any pre-trained ones, before redistributing.
 - **Inference:** [ONNX Runtime](https://onnxruntime.ai/) for Android (MIT).
 - **Weather data by [Open-Meteo.com](https://open-meteo.com/)**, used under their free, non-commercial terms.
+- **Chat:** conversations are served by [Groq](https://groq.com/), running OpenAI's open-weight `gpt-oss-20b` model (Apache 2.0). DriveBuddy is not affiliated with or endorsed by Groq or OpenAI.
 - **Music:** Spotify Web API. DriveBuddy is not affiliated with or endorsed by Spotify.
 - **Places and navigation:** Google Places API (New) and Google Maps. Not affiliated with or endorsed by Google.
 - Spotify, Google, Google Maps, Keep and Calendar are trademarks of their respective owners.
