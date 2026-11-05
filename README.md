@@ -98,31 +98,14 @@ Every stage is timed by a latency tracker and written to the log, so a slow inte
 
 ---
 
+```markdown
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph Phone
-        MIC[Microphone] --> WW[Wake word<br/>openWakeWord + ONNX Runtime]
-        WW --> SVC
-        VIS[VoiceInteractionService<br/>default-assistant role] --> SVC
-        UI[MainActivity<br/>orb, cards, chips] <--> BUS[DriveBus<br/>state + events]
-        SVC[DriveService<br/>foreground service,<br/>interaction state machine] <--> BUS
-        SVC --> STT[SpeechCapture<br/>SpeechRecognizer]
-        STT --> PARSE[CommandParser + helpers<br/>pure Kotlin]
-        PARSE --> SVC
-        SVC --> TTS[Speaker / AckVoice<br/>TextToSpeech + clip]
-        SVC --> ACT[PhoneActions / PhoneControls<br/>intents and system APIs]
-        SVC --> SP[SpotifyApi + SpotifyAuth<br/>PKCE, encrypted tokens]
-        SVC --> NB[NearbyClient / WeatherClient]
-        SVC --> LLM[LlmClient + BuddyChat<br/>catch-all conversation]
-        ACT --> APPS[Maps · Dialler · Calendar · Keep · Clock]
-        MEDIA[MediaListener<br/>notification listener] --> ACT
-    end
-    SP --> SPAPI[(Spotify Web API)]
-    NB --> PLACES[(Google Places API New)]
-    NB --> METEO[(Open-Meteo)]
-    LLM --> GROQ[(Groq API)]
+The diagram below illustrates DriveBuddy's system architecture,
+including its core Android components, voice interaction pipeline,
+external APIs, and integrations.
+
+![DriveBuddy System Architecture](docs/drivebuddy_architecture.png)
 ```
 
 ### Main components
