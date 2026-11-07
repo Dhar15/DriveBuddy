@@ -107,7 +107,7 @@ class LlmClient(private val apiKey: String = BuildConfig.GROQ_API_KEY) {
     private companion object {
         const val TAG = "DriveBuddy"
         const val ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-        const val MODEL = "openai/gpt-oss-20b"
+        const val MODEL = "openai/gpt-oss-120b"
         const val MAX_COMPLETION_TOKENS = 400
     }
 }

@@ -41,6 +41,7 @@ sealed class Command {
     /** [body] is null when the driver named the person but not the message. */
     data class Sms(val name: String, val body: String?) : Command()
     data class AddTodo(val item: String, val list: String) : Command()
+    data class News(val world: Boolean) : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -98,6 +99,11 @@ object CommandParser {
     )
     private val playRule = Regex("^play (.+?)(?: on (spotify|youtube music))?$")
 
+    private val newsRule = Regex(
+        "^(?:(?:what(?:'s|s| is)|tell me|give me|read me|read out|any) )?(?:the |today's |todays )?" +
+                "(?:(?:latest|top) )?(world |international |global )?(?:news|headlines)(?: today| now| right now| please)?$"
+    )
+
     fun parse(raw: String): Command {
         val normalized = raw.lowercase().replace(nonWord, " ").replace(spaces, " ").trim()
         if (normalized.isEmpty()) return Command.Empty
@@ -121,6 +127,7 @@ object CommandParser {
         if (weatherRule.matches(core)) return Command.Weather
         if (timeRule.matches(core)) return Command.Time
         if (dateRule.matches(core)) return Command.Date
+        newsRule.find(core)?.let { return Command.News(world = it.groupValues[1].isNotBlank()) }
         parseSms(core)?.let { return it }
         parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }

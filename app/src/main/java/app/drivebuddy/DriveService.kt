@@ -45,6 +45,10 @@ import app.drivebuddy.core.TrackCandidate
 import app.drivebuddy.core.TrackPicker
 import app.drivebuddy.core.BuddyChat
 import app.drivebuddy.core.TimeText
+import app.drivebuddy.core.NewsText
+import app.drivebuddy.core.Headline
+import app.drivebuddy.core.NewsPicker
+import android.net.Uri
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.TextStyle
@@ -109,6 +113,7 @@ class DriveService : Service() {
     private var inChat = false // true from the first buddy reply until the conversation ends
     private lateinit var llm: LlmClient
     private lateinit var quota: ChatQuota
+    private val newsSeen by lazy { NewsSeen(this) }
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -304,6 +309,7 @@ class DriveService : Service() {
     }
 
     private fun respond(command: Command) {
+        Log.i(TAG, "routed: ${command.javaClass.simpleName}")
         tracker.mark(Mark.ROUTED)
         tracker.command = command.javaClass.simpleName
         keepMusicPaused = command is Command.Play ||
@@ -332,6 +338,7 @@ class DriveService : Service() {
             is Command.Note -> reply(PhoneControls.note(this, command.text))
             is Command.Sms -> handleSms(command.name, command.body)
             is Command.Nearby -> handleNearby(command.what)
+            is Command.News -> handleNews(command.world)
             Command.Weather -> handleWeather()
             Command.Time -> { val now = LocalTime.now(); reply(TimeText.time(now.hour, now.minute)) }
             Command.Date -> {
@@ -750,6 +757,72 @@ class DriveService : Service() {
         inChat = true
         buddy.reset() // a new wake-up starts a new conversation
         askBuddy(text)
+    }
+
+    private fun handleNews(world: Boolean) {
+        Log.i(TAG, "news: asked (world=$world)")
+        main.removeCallbacks(watchdog)
+        publish("Getting the news...", DriveState.THINKING)
+        thread(name = "news") {
+            val all = NewsClient.headlines(if (world) NewsClient.WORLD else NewsClient.INDIA)
+            main.post {
+                if (destroyed) return@post
+                if (all == null) { reply("I couldn't get the news right now."); return@post }
+                val fresh = NewsPicker.fresh(all, newsSeen.links())
+                Log.i(TAG, "news: ${all.size} in the feed, ${fresh.size} not heard before")
+                when {
+                    all.isEmpty() -> reply("I couldn't find any headlines.")
+                    fresh.isEmpty() -> reply("There's nothing new since I last checked.")
+                    else -> offerHeadlines(if (world) "the BBC" else "The Hindu", fresh, 0)
+                }
+            }
+        }
+    }
+
+    /** Shows five tiles, reads them out, then waits for a number, "more" or "done". */
+    private fun offerHeadlines(source: String, fresh: List<Headline>, start: Int) {
+        val batch = fresh.drop(start).take(NewsText.BATCH)
+        if (batch.isEmpty()) {
+            DriveBus.showChoices(null)
+            reply("That's all the new headlines I have.")
+            return
+        }
+        newsSeen.mark(batch)
+        val more = start + batch.size < fresh.size
+        Log.i(TAG, "news: showing ${start + 1}-${start + batch.size} of ${fresh.size} new")
+        DriveBus.showChoices(
+            ChoiceCard(
+                title = "News",
+                rows = batch.map { ChoiceRow(NewsText.tile(it.title), source) },
+                hint = "Tap a story to read it",
+                hasMore = more,
+            ),
+        )
+        DriveBus.choiceTap = { token -> onChoiceTapped(token) }
+        bringScreenToFront()
+        val tail = if (more) " Say a number to open one, more, or done." else " Say a number to open one, or done."
+        ask(NewsText.speak(batch.map { it.title }, start == 0, source) + tail) { raw ->
+            val tapped = raw.startsWith("tap:")
+            when (val choice = PlaceChoice.parse(raw.removePrefix("tap:"), batch.size)) {
+                is PlaceChoice.Pick -> {
+                    val story = batch[choice.number - 1]
+                    Log.i(TAG, "news: opening story #${choice.number} (tapped=$tapped)")
+                    if (tapped) { openLink(story.link); finishInteraction() }
+                    else reply("Opening it on your phone.") { openLink(story.link) }
+                }
+                PlaceChoice.More -> offerHeadlines(source, fresh, start + batch.size)
+                else -> if (tapped) finishInteraction() else reply("Okay.")
+            }
+        }
+    }
+
+    private fun openLink(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            Log.i(TAG, "news: opened an article")
+        } catch (e: Exception) {
+            Log.w(TAG, "news: could not open the article: ${e.javaClass.simpleName}")
+        }
     }
 
     private fun askBuddy(text: String) {

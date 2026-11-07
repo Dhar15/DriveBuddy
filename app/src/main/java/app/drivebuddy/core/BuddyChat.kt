@@ -53,8 +53,8 @@ class BuddyChat(private val maxMessages: Int = 6, private val maxExchanges: Int 
                     "and you cannot see the phone, the location, the weather or the traffic. Never claim you did any of these. " +
                     "If the driver asks for one, tell them what to say, for example: Try saying, set a timer for ten minutes. " +
                     "Do not invent facts; if you are not sure, say so briefly. " +
-                    "The speech recogniser sometimes mishears the driver, so the text may be garbled or look like a half-formed command; " +
-                    "if it makes no sense, say you did not quite catch it and ask them to say it again. " +
+                    "Take every sentence as meant. Only if a sentence is truly unintelligible, say you did not quite catch it; never say that for a clear question. " +
+                    "When you cannot answer because you cannot look something up, say so in one friendly sentence and offer something useful instead; never tell the driver to ask someone else. " +                    "if it makes no sense, say you did not quite catch it and ask them to say it again. " +
                     "If the driver sounds drowsy, upset or distracted, gently suggest a short break when it is safe."
 
         private const val MAX_SPOKEN_CHARS = 350
