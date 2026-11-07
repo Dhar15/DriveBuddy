@@ -117,7 +117,6 @@ class DriveService : Service() {
     private lateinit var llm: LlmClient
     private lateinit var quota: ChatQuota
     private val newsSeen by lazy { NewsSeen(this) }
-    private val slideTasks = mutableListOf<Runnable>()
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -661,15 +660,17 @@ class DriveService : Service() {
         DriveBus.choiceTap = { token -> onChoiceTapped(token) }
         bringScreenToFront()
         val prompt = NearbyText.offerBatch(batch, start == 0, more)
-        askBatch(what, ranked, start, batch, more, prompt, retried = false)
-        followSpeech(prompt, batch.map { NearbyText.shortName(it.place.name) })
+        askBatch(
+            what, ranked, start, batch, more, prompt, retried = false,
+            onProgress = slideAlong(prompt, batch.map { NearbyText.shortName(it.place.name) }),
+        )
     }
 
     private fun askBatch(
         what: String, ranked: List<RankedPlace>, start: Int, batch: List<RankedPlace>,
-        more: Boolean, prompt: String, retried: Boolean,
+        more: Boolean, prompt: String, retried: Boolean, onProgress: ((Int) -> Unit)? = null,
     ) {
-        ask(prompt) { raw ->
+        ask(prompt, onProgress) { raw ->
             val tapped = raw.startsWith("tap:")
             val choice = PlaceChoice.parse(raw.removePrefix("tap:"), batch.size)
             Log.i(TAG, "nearby: answer -> $choice (tapped=$tapped)")
@@ -704,7 +705,6 @@ class DriveService : Service() {
 
     /** A button on the pick-one card was tapped: cut off the read-out or the listening and deliver it as the answer. */
     private fun onChoiceTapped(token: String) {
-        cancelSlides()
         val handler = pendingAsk?.onAnswer ?: answerHandler
         if (handler == null) {
             Log.i(TAG, "choice tapped but nothing is waiting for it: $token")
@@ -818,7 +818,7 @@ class DriveService : Service() {
         bringScreenToFront()
         val tail = if (more) " Say a number to open one, more, or done." else " Say a number to open one, or done."
         val spoken = NewsText.speak(batch.map { it.title }, start == 0, source) + tail
-        ask(spoken) { raw ->
+        ask(spoken, onProgress = slideAlong(spoken, batch.indices.map { "Number ${it + 1}." })) { raw ->
             val tapped = raw.startsWith("tap:")
             when (val choice = StoryChoice.parse(raw.removePrefix("tap:"), batch.size)) {
                 is PlaceChoice.Pick -> {
@@ -831,7 +831,6 @@ class DriveService : Service() {
                 else -> if (tapped) finishInteraction() else reply("Okay.")
             }
         }
-        followSpeech(spoken, batch.indices.map { "Number ${it + 1}." })
     }
 
     private fun openLink(url: String) {
@@ -927,22 +926,18 @@ class DriveService : Service() {
         return true
     }
 
-    /** Slides the card to each item at about the moment the buddy starts reading it. Page 1 is already showing. */
-    private fun followSpeech(text: String, markers: List<String>) {
-        cancelSlides()
+    /** Returns a callback for the voice's position: moves the card to each item the moment its first word is spoken. */
+    private fun slideAlong(text: String, markers: List<String>): (Int) -> Unit {
         val offsets = ReadAlong.offsets(text, markers)
         Log.d(TAG, "choices: slide markers found ${offsets.count { it >= 0 }} of ${markers.size}")
-        offsets.forEachIndexed { page, at ->
-            if (page == 0 || at < 0) return@forEachIndexed
-            val task = Runnable { DriveBus.slideTo(page) }
-            slideTasks += task
-            main.postDelayed(task, ReadAlong.delayMs(at))
+        var shown = 0
+        return { spoken ->
+            val target = offsets.indexOfLast { it in 0..spoken }
+            if (target > shown) {
+                shown = target
+                DriveBus.slideTo(target)
+            }
         }
-    }
-
-    private fun cancelSlides() {
-        slideTasks.forEach { main.removeCallbacks(it) }
-        slideTasks.clear()
     }
 
     private fun confirmSms(who: Candidate, body: String) {
@@ -991,8 +986,7 @@ class DriveService : Service() {
         return started
     }
 
-    private fun reply(text: String, afterSpeaking: (() -> Unit)? = null) {
-        main.removeCallbacks(watchdog)
+    private fun reply(text: String, afterSpeaking: (() -> Unit)? = null, onProgress: ((Int) -> Unit)? = null) {        main.removeCallbacks(watchdog)
         speaking = true
         interrupted = false
         publish("Speaking...", DriveState.SPEAKING)
@@ -1004,14 +998,15 @@ class DriveService : Service() {
                 if (afterSpeaking != null && !interrupted) afterSpeaking()
                 if (pendingAsk != null && !interrupted) startFollowUp() else finishInteraction()
             },
+            onProgress = onProgress,
         )
     }
 
     /** Says [prompt], then listens for the answer and hands the text to [onAnswer]. */
-    private fun ask(prompt: String, onAnswer: (String) -> Unit) {
+    private fun ask(prompt: String, onProgress: ((Int) -> Unit)? = null, onAnswer: (String) -> Unit) {
         Log.i(TAG, "follow-up: asking \"$prompt\"")
         pendingAsk = Ask(prompt, onAnswer)
-        reply(prompt)
+        reply(prompt, onProgress = onProgress)
     }
 
     /** A yes/no question. A mumbled answer is asked once more, then treated as no. */
@@ -1033,7 +1028,6 @@ class DriveService : Service() {
 
     /** Called when the question has been spoken: listen again straight away, no wake word needed. */
     private fun startFollowUp() {
-        cancelSlides()
         val asked = pendingAsk ?: return finishInteraction()
         pendingAsk = null
         answerHandler = asked.onAnswer
@@ -1046,7 +1040,6 @@ class DriveService : Service() {
     }
 
     private fun finishInteraction() {
-        cancelSlides()
         main.removeCallbacks(watchdog)
         speaking = false
         inChat = false

@@ -19,6 +19,8 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     private var currentId: String? = null
     private var startCallback: (() -> Unit)? = null
     private var doneCallback: (() -> Unit)? = null
+    private var progressCallback: ((Int) -> Unit)? = null
+    private var progressSeen = false
 
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) {
@@ -48,6 +50,16 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
                     if (utteranceId == currentId) {
                         startCallback?.invoke()
                     }
+                }
+            }
+
+            override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                if (!progressSeen) {
+                    progressSeen = true
+                    Log.i("DriveBuddy", "TTS progress callbacks working, first at character $start")
+                }
+                main.post {
+                    if (utteranceId == currentId) progressCallback?.invoke(start)
                 }
             }
 
@@ -81,7 +93,7 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     }
 
     /** Speaks [text]. [onStart] fires when audio actually begins; [onDone] when it ends or fails. */
-    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit) {
+    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit, onProgress: ((Int) -> Unit)? = null) {
         Log.i("DriveBuddy", "TTS requested: '$text', ready=$ready")
 
         if (!ready) {
@@ -93,6 +105,8 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
         currentId = id
         startCallback = onStart
         doneCallback = onDone
+        progressCallback = onProgress
+        progressSeen = false
         val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
         Log.i("DriveBuddy", "TTS speak result=$result, id=$id")
         if (result == TextToSpeech.ERROR) {
@@ -102,6 +116,10 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     }
 
     private fun finish() {
+        if (progressCallback != null && !progressSeen) {
+            Log.w("DriveBuddy", "TTS: this engine sent no progress callbacks, the card cannot follow the voice")
+        }
+        progressCallback = null
         val done = doneCallback
         doneCallback = null
         startCallback = null
