@@ -1,5 +1,6 @@
 package app.drivebuddy.core
 
+import app.drivebuddy.features.chat.BuddyChat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

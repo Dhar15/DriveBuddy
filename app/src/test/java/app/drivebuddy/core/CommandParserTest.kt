@@ -1,5 +1,8 @@
 package app.drivebuddy.core
 
+import app.drivebuddy.command.Command
+import app.drivebuddy.command.CommandParser
+import app.drivebuddy.command.MediaAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

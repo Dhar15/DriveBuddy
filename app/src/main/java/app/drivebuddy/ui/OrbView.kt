@@ -13,7 +13,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
-import app.drivebuddy.DriveState
 import kotlin.math.exp
 import kotlin.math.min
 import kotlin.math.sin

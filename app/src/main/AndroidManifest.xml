@@ -40,7 +40,7 @@
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -49,12 +49,12 @@
         </activity>
 
         <service
-            android:name=".DriveService"
+            android:name=".service.DriveService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
         <service
-            android:name=".MediaListener"
+            android:name=".features.music.MediaListener"
             android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
@@ -85,9 +85,9 @@
             </intent-filter>
         </service>
 
-        <activity android:name=".PlacesActivity" android:exported="false" />
-        <activity android:name=".JourneyActivity" android:exported="false" />
-        <activity android:name=".SetupActivity" android:exported="false" />
-        <activity android:name=".SettingsActivity" android:exported="false" />
+        <activity android:name=".ui.PlacesActivity" android:exported="false" />
+        <activity android:name=".ui.JourneyActivity" android:exported="false" />
+        <activity android:name=".ui.SetupActivity" android:exported="false" />
+        <activity android:name=".ui.SettingsActivity" android:exported="false" />
     </application>
 </manifest>

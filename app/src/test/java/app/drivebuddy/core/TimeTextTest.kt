@@ -1,5 +1,6 @@
 package app.drivebuddy.core
 
+import app.drivebuddy.features.clock.TimeText
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

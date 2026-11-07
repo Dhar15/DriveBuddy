@@ -1,5 +1,7 @@
 package app.drivebuddy.core
 
+import app.drivebuddy.common.LatencyTracker
+import app.drivebuddy.common.Mark
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
