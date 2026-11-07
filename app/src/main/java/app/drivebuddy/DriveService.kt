@@ -48,7 +48,10 @@ import app.drivebuddy.core.TimeText
 import app.drivebuddy.core.NewsText
 import app.drivebuddy.core.Headline
 import app.drivebuddy.core.NewsPicker
+import app.drivebuddy.core.ReadAlong
+import app.drivebuddy.core.TripEstimate
 import android.net.Uri
+import app.drivebuddy.core.StoryChoice
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.TextStyle
@@ -114,6 +117,7 @@ class DriveService : Service() {
     private lateinit var llm: LlmClient
     private lateinit var quota: ChatQuota
     private val newsSeen by lazy { NewsSeen(this) }
+    private val slideTasks = mutableListOf<Runnable>()
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -642,15 +646,23 @@ class DriveService : Service() {
         DriveBus.showChoices(
             ChoiceCard(
                 title = what.replaceFirstChar { it.uppercase() },
-                rows = batch.map { ChoiceRow(NearbyText.shortName(it.place.name), NearbyText.shortDistance(it.meters)) },
-                hint = NearbyText.hint(batch.size),
+                rows = batch.map {
+                    ChoiceRow(
+                        NearbyText.shortName(it.place.name),
+                        NearbyText.shortDistance(it.meters),
+                        TripEstimate.byCar(it.meters.toDouble()),
+                    )
+                },                hint = NearbyText.hint(batch.size),
                 hasMore = more,
                 paged = true,
+                compact = true,
             ),
         )
         DriveBus.choiceTap = { token -> onChoiceTapped(token) }
         bringScreenToFront()
-        askBatch(what, ranked, start, batch, more, NearbyText.offerBatch(batch, start == 0, more), retried = false)
+        val prompt = NearbyText.offerBatch(batch, start == 0, more)
+        askBatch(what, ranked, start, batch, more, prompt, retried = false)
+        followSpeech(prompt, batch.map { NearbyText.shortName(it.place.name) })
     }
 
     private fun askBatch(
@@ -692,6 +704,7 @@ class DriveService : Service() {
 
     /** A button on the pick-one card was tapped: cut off the read-out or the listening and deliver it as the answer. */
     private fun onChoiceTapped(token: String) {
+        cancelSlides()
         val handler = pendingAsk?.onAnswer ?: answerHandler
         if (handler == null) {
             Log.i(TAG, "choice tapped but nothing is waiting for it: $token")
@@ -794,7 +807,7 @@ class DriveService : Service() {
         DriveBus.showChoices(
             ChoiceCard(
                 title = "News",
-                rows = batch.map { ChoiceRow(it.title, source, NewsText.tile(it.summary, 220)) },
+                rows = batch.map { ChoiceRow(it.title, source, NewsText.tile(it.summary, 120)) },
                 hint = "Swipe for the next story, or say its number",
                 hasMore = more,
                 paged = true,
@@ -804,9 +817,10 @@ class DriveService : Service() {
         DriveBus.choiceTap = { token -> onChoiceTapped(token) }
         bringScreenToFront()
         val tail = if (more) " Say a number to open one, more, or done." else " Say a number to open one, or done."
-        ask(NewsText.speak(batch.map { it.title }, start == 0, source) + tail) { raw ->
+        val spoken = NewsText.speak(batch.map { it.title }, start == 0, source) + tail
+        ask(spoken) { raw ->
             val tapped = raw.startsWith("tap:")
-            when (val choice = PlaceChoice.parse(raw.removePrefix("tap:"), batch.size)) {
+            when (val choice = StoryChoice.parse(raw.removePrefix("tap:"), batch.size)) {
                 is PlaceChoice.Pick -> {
                     val story = batch[choice.number - 1]
                     Log.i(TAG, "news: opening story #${choice.number} (tapped=$tapped)")
@@ -817,6 +831,7 @@ class DriveService : Service() {
                 else -> if (tapped) finishInteraction() else reply("Okay.")
             }
         }
+        followSpeech(spoken, batch.indices.map { "Number ${it + 1}." })
     }
 
     private fun openLink(url: String) {
@@ -912,6 +927,24 @@ class DriveService : Service() {
         return true
     }
 
+    /** Slides the card to each item at about the moment the buddy starts reading it. Page 1 is already showing. */
+    private fun followSpeech(text: String, markers: List<String>) {
+        cancelSlides()
+        val offsets = ReadAlong.offsets(text, markers)
+        Log.d(TAG, "choices: slide markers found ${offsets.count { it >= 0 }} of ${markers.size}")
+        offsets.forEachIndexed { page, at ->
+            if (page == 0 || at < 0) return@forEachIndexed
+            val task = Runnable { DriveBus.slideTo(page) }
+            slideTasks += task
+            main.postDelayed(task, ReadAlong.delayMs(at))
+        }
+    }
+
+    private fun cancelSlides() {
+        slideTasks.forEach { main.removeCallbacks(it) }
+        slideTasks.clear()
+    }
+
     private fun confirmSms(who: Candidate, body: String) {
         Log.i(TAG, "sms: confirming a ${body.length}-character message to ${who.name}")
         askYesNo("Send to ${who.name}: $body. Shall I send it?", onYes = {
@@ -1000,6 +1033,7 @@ class DriveService : Service() {
 
     /** Called when the question has been spoken: listen again straight away, no wake word needed. */
     private fun startFollowUp() {
+        cancelSlides()
         val asked = pendingAsk ?: return finishInteraction()
         pendingAsk = null
         answerHandler = asked.onAnswer
@@ -1012,6 +1046,7 @@ class DriveService : Service() {
     }
 
     private fun finishInteraction() {
+        cancelSlides()
         main.removeCallbacks(watchdog)
         speaking = false
         inChat = false

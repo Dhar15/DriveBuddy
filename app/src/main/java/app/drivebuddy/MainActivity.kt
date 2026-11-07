@@ -284,6 +284,7 @@ class MainActivity : Activity() {
     /** Draws the full-screen "pick one" layer (nearby places) over the orb, or fades it away when there is none. */
     private fun showChoices(card: ChoiceCard?) {
         choicesBox.removeAllViews()
+        DriveBus.pageTo = null
         if (card == null || card.rows.isEmpty()) {
             choicesBox.visibility = View.GONE
             return
@@ -435,48 +436,83 @@ class MainActivity : Activity() {
             val row = card.rows[i]
             return LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(24), dp(28), dp(24), dp(24))
+                setPadding(dp(24), dp(22), dp(24), dp(22))
                 background = android.graphics.drawable.GradientDrawable().apply {
                     cornerRadius = dp(28).toFloat()
                     setColor(0xF217132A.toInt()); setStroke(dp(1), 0xFF372E55.toInt())
                 }
-                addView(TextView(context).apply {
-                    text = "${i + 1}"; gravity = Gravity.CENTER
-                    setTextColor(0xFFF2A93B.toInt()); textSize = 20f
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        shape = android.graphics.drawable.GradientDrawable.OVAL
-                        setColor(0x1AF2A93B); setStroke(dp(2), 0xFFF2A93B.toInt())
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(46), dp(46))
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(context).apply {
+                        text = "${i + 1}"; gravity = Gravity.CENTER
+                        setTextColor(0xFFF2A93B.toInt()); textSize = 15f
+                        background = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(0x1AF2A93B); setStroke(dp(2), 0xFFF2A93B.toInt())
+                        }
+                        layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { rightMargin = dp(12) }
+                    })
+                    if (!card.compact) addView(TextView(context).apply {
+                        text = row.detail.uppercase(); textSize = 12f; letterSpacing = 0.14f
+                        setTextColor(0xFF9C95B5.toInt())
+                    })
                 })
-                addView(TextView(context).apply {
-                    text = row.detail.uppercase(); textSize = 12f; letterSpacing = 0.14f
-                    setTextColor(0xFF9C95B5.toInt()); setPadding(0, dp(20), 0, 0)
-                })
-                addView(TextView(context).apply {
-                    text = row.label; textSize = 26f; setTextColor(0xFFF4F1FA.toInt())
+                if (card.compact) addView(TextView(context).apply {
+                    text = row.detail; textSize = 48f; setTextColor(0xFFF4F1FA.toInt())
                     typeface = android.graphics.Typeface.create("sans-serif-light", android.graphics.Typeface.NORMAL)
-                    maxLines = 7; ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(10), 0, 0)
+                    setPadding(0, dp(20), 0, 0)
                 })
-                if (row.body.isNotBlank()) addView(TextView(context).apply {
-                    text = row.body; textSize = 16f; setTextColor(0xFF9C95B5.toInt())
-                    setLineSpacing(0f, 1.15f); maxLines = 8
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(16), 0, 0)
+                addView(TextView(context).apply {
+                    text = row.label
+                    textSize = when {
+                        card.compact -> 24f
+                        row.label.length > 90 -> 19f
+                        else -> 22f
+                    }
+                    setTextColor(0xFFF4F1FA.toInt())
+                    typeface = android.graphics.Typeface.create("sans-serif-light", android.graphics.Typeface.NORMAL)
+                    if (card.compact) { maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.END }
+                    setPadding(0, dp(if (card.compact) 6 else 16), 0, 0)
                 })
+                if (card.compact) {
+                    if (row.body.isNotBlank()) addView(TextView(context).apply {
+                        text = row.body; textSize = 15f; setTextColor(0xFF9C95B5.toInt())
+                        maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                        setPadding(0, dp(12), 0, 0)
+                    })
+                    addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(28)))
+                } else {
+                    // Takes all the space left under the title, then shows only as many lines as fit.
+                    addView(TextView(context).apply {
+                        text = row.body; textSize = 15f; setTextColor(0xFF9C95B5.toInt())
+                        setLineSpacing(0f, 1.15f)
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        setPadding(0, dp(12), 0, dp(8))
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                        addOnLayoutChangeListener { v, _, top, _, bottom, _, _, _, _ ->
+                            val tv = v as TextView
+                            val room = bottom - top - tv.paddingTop - tv.paddingBottom
+                            val fit = room / tv.lineHeight
+                            val lines = fit.coerceIn(1, 4)
+                            tv.alpha = if (fit < 1) 0f else 1f
+                            if (tv.maxLines != lines) tv.maxLines = lines
+                        }
+                    })
+                }
                 addView(View(context), LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                    LinearLayout.LayoutParams.MATCH_PARENT, if (card.compact) dp(28) else 0, if (card.compact) 0f else 1f))
                 addView(TextView(context).apply {
                     text = "${card.action}  →"; gravity = Gravity.CENTER
                     setTextColor(Color.WHITE); textSize = 17f
-                    setPadding(dp(16), dp(16), dp(16), dp(16))
+                    setPadding(dp(16), dp(15), dp(16), dp(15))
                     background = pill(0xFF7B5CF0.toInt(), null)
                     setOnClickListener { DriveBus.tapChoice("${i + 1}") }
                 })
             }
         }
 
+        var follow = true
         val pager = ViewPager2(this).apply {
             setPadding(dp(20), 0, dp(20), 0)
             offscreenPageLimit = 1
@@ -489,7 +525,12 @@ class MainActivity : Activity() {
                     }) {}
                 override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
                     (holder.itemView as android.widget.FrameLayout).apply {
-                        removeAllViews(); addView(pageFor(position))
+                        removeAllViews()
+                        addView(pageFor(position), android.widget.FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            if (card.compact) ViewGroup.LayoutParams.WRAP_CONTENT else ViewGroup.LayoutParams.MATCH_PARENT,
+                            Gravity.CENTER_VERTICAL,
+                        ))
                     }
                 }
             }
@@ -506,9 +547,19 @@ class MainActivity : Activity() {
                     select(position)
                     Log.d(TAG, "choices: now on page ${position + 1}")
                 }
+
+                override fun onPageScrollStateChanged(state: Int) {
+                    if (state == ViewPager2.SCROLL_STATE_DRAGGING && follow) {
+                        follow = false
+                        Log.d(TAG, "choices: you took over, auto-slide off")
+                    }
+                }
             })
         }
         (pager.getChildAt(0) as RecyclerView).clipToPadding = false
+        DriveBus.pageTo = { pos ->
+            if (follow && pos in card.rows.indices) pager.setCurrentItem(pos, true)
+        }
         select(0)
 
         root.addView(header)

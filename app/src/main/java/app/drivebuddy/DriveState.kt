@@ -22,7 +22,9 @@ data class ChoiceCard(
     val hint: String,
     val hasMore: Boolean,
     val paged: Boolean = false,
-    val action: String = "Navigate",)
+    val action: String = "Navigate",
+    val compact: Boolean = false,
+    )
 
 /** Single place the service writes to and the screen listens to. */
 object DriveBus {
@@ -46,6 +48,14 @@ object DriveBus {
     /** Set by the service while a pick-one card is on offer; the screen calls [tapChoice] when a button is tapped. */
     @Volatile
     var choiceTap: ((String) -> Unit)? = null
+
+    /** Set by the screen while a paged card is showing; moves it to a page. */
+    @Volatile
+    var pageTo: ((Int) -> Unit)? = null
+
+    fun slideTo(page: Int) {
+        main.post { pageTo?.invoke(page) }
+    }
 
     fun tapChoice(token: String) {
         choiceTap?.invoke(token)
