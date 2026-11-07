@@ -13,10 +13,16 @@ data class DriveUiState(
 )
 
 /** One line of the "pick one" card on the home screen. */
-data class ChoiceRow(val label: String, val detail: String)
+data class ChoiceRow(val label: String, val detail: String, val body: String = "")
 
 /** The "pick one" card: a title, up to three rows and a hint line. */
-data class ChoiceCard(val title: String, val rows: List<ChoiceRow>, val hint: String, val hasMore: Boolean)
+data class ChoiceCard(
+    val title: String,
+    val rows: List<ChoiceRow>,
+    val hint: String,
+    val hasMore: Boolean,
+    val paged: Boolean = false,
+    val action: String = "Navigate",)
 
 /** Single place the service writes to and the screen listens to. */
 object DriveBus {

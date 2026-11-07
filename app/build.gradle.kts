@@ -49,6 +49,8 @@ android {
 
 dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    implementation("androidx.viewpager2:viewpager2:1.1.0")
+
     // Deliberately no AndroidX / Compose in milestone 1: fewer moving parts to break the first build.
     testImplementation("junit:junit:4.13.2")
 }

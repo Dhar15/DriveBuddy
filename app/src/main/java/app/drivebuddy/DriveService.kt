@@ -645,6 +645,7 @@ class DriveService : Service() {
                 rows = batch.map { ChoiceRow(NearbyText.shortName(it.place.name), NearbyText.shortDistance(it.meters)) },
                 hint = NearbyText.hint(batch.size),
                 hasMore = more,
+                paged = true,
             ),
         )
         DriveBus.choiceTap = { token -> onChoiceTapped(token) }
@@ -793,9 +794,11 @@ class DriveService : Service() {
         DriveBus.showChoices(
             ChoiceCard(
                 title = "News",
-                rows = batch.map { ChoiceRow(NewsText.tile(it.title), source) },
-                hint = "Tap a story to read it",
+                rows = batch.map { ChoiceRow(it.title, source, NewsText.tile(it.summary, 220)) },
+                hint = "Swipe for the next story, or say its number",
                 hasMore = more,
+                paged = true,
+                action = "Read story",
             ),
         )
         DriveBus.choiceTap = { token -> onChoiceTapped(token) }

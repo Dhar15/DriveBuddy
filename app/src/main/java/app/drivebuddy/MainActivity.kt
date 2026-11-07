@@ -26,6 +26,12 @@ import android.widget.HorizontalScrollView
 import app.drivebuddy.ui.SettingsIconView
 import android.widget.FrameLayout
 import android.widget.ScrollView
+import androidx.recyclerview.widget.RecyclerView
+import androidx.viewpager2.widget.CompositePageTransformer
+import androidx.viewpager2.widget.MarginPageTransformer
+import androidx.viewpager2.widget.ViewPager2
+import android.view.ViewGroup
+import kotlin.math.abs
 
 /** Plain-views screen for milestone 1: start/stop the drive service and test a "Talk" interaction. */
 class MainActivity : Activity() {
@@ -283,6 +289,7 @@ class MainActivity : Activity() {
             return
         }
         Log.i(TAG, "choices: showing ${card.rows.size} row(s) for \"${card.title}\"")
+        if (card.paged) { showPaged(card); return }
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
         fun pill(fill: Int, stroke: Int?) = android.graphics.drawable.GradientDrawable().apply {
@@ -390,6 +397,144 @@ class MainActivity : Activity() {
         })
 
         choicesBox.addView(ScrollView(this).apply { addView(column) })
+    }
+
+    /** One full-screen page per story or place; swipe sideways, tap the big button to pick. */
+    private fun showPaged(card: ChoiceCard) {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun pill(fill: Int, stroke: Int?) = android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = dp(26).toFloat(); setColor(fill)
+            if (stroke != null) setStroke(dp(1), stroke)
+        }
+        choicesBox.visibility = View.VISIBLE
+        choicesBox.background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xF70B0A12.toInt(), 0xF40B0A12.toInt(), 0xEB0B0A12.toInt())
+        )
+        choicesBox.isClickable = true
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(64), 0, dp(24))
+        }
+        val header = TextView(this).apply {
+            setTextColor(0xFFF2A93B.toInt()); textSize = 12f; letterSpacing = 0.18f
+            setPadding(dp(28), 0, dp(28), dp(14))
+        }
+        val dots = TextView(this).apply {
+            gravity = Gravity.CENTER; textSize = 14f; letterSpacing = 0.3f
+            setTextColor(0xFFF2A93B.toInt()); setPadding(0, dp(14), 0, dp(10))
+        }
+        fun select(pos: Int) {
+            header.text = "${card.title.uppercase()}  ·  ${pos + 1} OF ${card.rows.size}"
+            dots.text = card.rows.indices.joinToString(" ") { if (it == pos) "●" else "○" }
+        }
+
+        fun pageFor(i: Int): View {
+            val row = card.rows[i]
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(24), dp(28), dp(24), dp(24))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = dp(28).toFloat()
+                    setColor(0xF217132A.toInt()); setStroke(dp(1), 0xFF372E55.toInt())
+                }
+                addView(TextView(context).apply {
+                    text = "${i + 1}"; gravity = Gravity.CENTER
+                    setTextColor(0xFFF2A93B.toInt()); textSize = 20f
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL
+                        setColor(0x1AF2A93B); setStroke(dp(2), 0xFFF2A93B.toInt())
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dp(46), dp(46))
+                })
+                addView(TextView(context).apply {
+                    text = row.detail.uppercase(); textSize = 12f; letterSpacing = 0.14f
+                    setTextColor(0xFF9C95B5.toInt()); setPadding(0, dp(20), 0, 0)
+                })
+                addView(TextView(context).apply {
+                    text = row.label; textSize = 26f; setTextColor(0xFFF4F1FA.toInt())
+                    typeface = android.graphics.Typeface.create("sans-serif-light", android.graphics.Typeface.NORMAL)
+                    maxLines = 7; ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, dp(10), 0, 0)
+                })
+                if (row.body.isNotBlank()) addView(TextView(context).apply {
+                    text = row.body; textSize = 16f; setTextColor(0xFF9C95B5.toInt())
+                    setLineSpacing(0f, 1.15f); maxLines = 8
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, dp(16), 0, 0)
+                })
+                addView(View(context), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                addView(TextView(context).apply {
+                    text = "${card.action}  →"; gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE); textSize = 17f
+                    setPadding(dp(16), dp(16), dp(16), dp(16))
+                    background = pill(0xFF7B5CF0.toInt(), null)
+                    setOnClickListener { DriveBus.tapChoice("${i + 1}") }
+                })
+            }
+        }
+
+        val pager = ViewPager2(this).apply {
+            setPadding(dp(20), 0, dp(20), 0)
+            offscreenPageLimit = 1
+            adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+                override fun getItemCount() = card.rows.size
+                override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+                    object : RecyclerView.ViewHolder(android.widget.FrameLayout(parent.context).apply {
+                        layoutParams = RecyclerView.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    }) {}
+                override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                    (holder.itemView as android.widget.FrameLayout).apply {
+                        removeAllViews(); addView(pageFor(position))
+                    }
+                }
+            }
+            setPageTransformer(CompositePageTransformer().apply {
+                addTransformer(MarginPageTransformer(dp(12)))
+                addTransformer(ViewPager2.PageTransformer { page, pos ->
+                    val a = abs(pos)
+                    page.alpha = 1f - 0.45f * a
+                    page.scaleY = 1f - 0.06f * a
+                })
+            })
+            registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+                override fun onPageSelected(position: Int) {
+                    select(position)
+                    Log.d(TAG, "choices: now on page ${position + 1}")
+                }
+            })
+        }
+        (pager.getChildAt(0) as RecyclerView).clipToPadding = false
+        select(0)
+
+        root.addView(header)
+        root.addView(pager, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(dots)
+
+        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        fun footerButton(label: String, key: String, filled: Boolean) = TextView(this).apply {
+            text = label; gravity = Gravity.CENTER; textSize = 15f
+            setTextColor(if (filled) 0xFFF4F1FA.toInt() else 0xFF9C95B5.toInt())
+            background = pill(if (filled) 0x337B5CF0 else Color.TRANSPARENT, 0xFF372E55.toInt())
+            setPadding(dp(28), dp(14), dp(28), dp(14))
+            setOnClickListener { DriveBus.tapChoice(key) }
+        }
+        if (card.hasMore) footer.addView(footerButton("More", "more", true),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { rightMargin = dp(12) })
+        footer.addView(footerButton("Cancel", "cancel", false))
+        root.addView(footer)
+        root.addView(TextView(this).apply {
+            text = card.hint; setTextColor(0xFF6E678A.toInt()); textSize = 13f
+            gravity = Gravity.CENTER; setPadding(dp(20), dp(14), dp(20), 0)
+        })
+
+        choicesBox.addView(root)
     }
 
     private fun showLastTrip() {

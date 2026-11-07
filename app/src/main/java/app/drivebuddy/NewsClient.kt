@@ -47,17 +47,19 @@ object NewsClient {
         var inItem = false
         var title = ""
         var link = ""
+        var summary = ""
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT && out.size < MAX_TITLES) {
             when (event) {
                 XmlPullParser.START_TAG -> when (parser.name) {
-                    "item" -> { inItem = true; title = ""; link = "" }
+                    "item" -> { inItem = true; title = ""; link = ""; summary = "" }
                     "title" -> if (inItem) title = NewsText.clean(parser.nextText())
                     "link" -> if (inItem) link = parser.nextText().trim()
+                    "description" -> if (inItem) summary = NewsText.clean(parser.nextText())
                 }
                 XmlPullParser.END_TAG -> if (parser.name == "item") {
                     inItem = false
-                    if (title.isNotEmpty() && link.isNotEmpty()) out += Headline(title, link.replace("http://", "https://"))
+                    if (title.isNotEmpty() && link.isNotEmpty()) out += Headline(title, link.replace("http://", "https://"), if (summary == title) "" else summary)
                 }
             }
             event = parser.next()
