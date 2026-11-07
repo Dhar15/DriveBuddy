@@ -159,7 +159,7 @@ external APIs, and integrations.
 Anything the rules do not recognise becomes a conversation with **Oreo** instead of an echo.
 
 - **Where it plugs in:** only the old catch-all branch. Every recognised command takes exactly the path it always did, so nothing else can regress.
-- **Model:** Groq's `openai/gpt-oss-20b` at low reasoning effort (up to 400 completion tokens; the spoken answer is kept to a couple of sentences by the prompt). Replies come back in roughly half a second to two seconds. A first choice, `llama-3.3-70b-versatile`, turned out to be retired on free tiers on 16 August 2026, which is why the model name lives in one constant in `LlmClient`.
+- **Model:** Groq's `openai/gpt-oss-120b` at low reasoning effort (up to 400 completion tokens; the spoken answer is kept to a couple of sentences by the prompt). Replies come back in roughly half a second to two seconds. A first choice, `llama-3.3-70b-versatile`, turned out to be retired on free tiers on 16 August 2026, which is why the model name lives in one constant in `LlmClient`.
 - **It talks but never acts.** The system prompt states it cannot play music, navigate, call, text, set timers or open apps, and cannot see the phone, location, weather or traffic. If asked, it tells the driver what to say instead ("try saying: set a timer for ten minutes"). This prevents "Done, I've set it" when nothing happened.
 - **Written for speech:** one or two plain sentences, no lists, markdown or emoji. `BuddyChat.tidy` strips symbols and trims long replies at a sentence end.
 - **Garbled input:** the speech recogniser sometimes mishears, so the prompt tells the model to ask for a repeat when a sentence makes no sense. (For example, "what's up" is sometimes heard as "WhatsApp"; this is left as is.)
@@ -388,7 +388,7 @@ Next, roughly in order:
 - **Wake word:** [openWakeWord](https://github.com/dscripka/openWakeWord) (code under Apache 2.0). Check the licence of every model file you ship, including any pre-trained ones, before redistributing.
 - **Inference:** [ONNX Runtime](https://onnxruntime.ai/) for Android (MIT).
 - **Weather data by [Open-Meteo.com](https://open-meteo.com/)**, used under their free, non-commercial terms.
-- **Chat:** conversations are served by [Groq](https://groq.com/), running OpenAI's open-weight `gpt-oss-20b` model (Apache 2.0). DriveBuddy is not affiliated with or endorsed by Groq or OpenAI.
+- **Chat:** conversations are served by [Groq](https://groq.com/), running OpenAI's open-weight `gpt-oss-120b` model (Apache 2.0). DriveBuddy is not affiliated with or endorsed by Groq or OpenAI.
 - **Music:** Spotify Web API. DriveBuddy is not affiliated with or endorsed by Spotify.
 - **Places and navigation:** Google Places API (New) and Google Maps. Not affiliated with or endorsed by Google.
 - Spotify, Google, Google Maps, Keep and Calendar are trademarks of their respective owners.
