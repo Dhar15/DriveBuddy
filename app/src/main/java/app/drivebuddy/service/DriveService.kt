@@ -1,7 +1,7 @@
 package app.drivebuddy.service
 
 import android.Manifest
-import android.R
+import app.drivebuddy.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -1154,7 +1154,7 @@ class DriveService : Service() {
             this, 2, Intent(this, DriveService::class.java).setAction(ACTION_STOP), flags,
         )
         val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), flags)
-        val icon = R.drawable.ic_btn_speak_now
+        val icon = R.drawable.ic_stat_drivebuddy
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(icon)
             .setContentTitle("DriveBuddy")
