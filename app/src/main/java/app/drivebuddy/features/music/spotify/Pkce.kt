@@ -1,4 +1,4 @@
-package app.drivebuddy.features.music
+package app.drivebuddy.features.music.spotify
 
 import java.security.MessageDigest
 import java.security.SecureRandom

@@ -6,7 +6,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import app.drivebuddy.features.music.Pkce
+import app.drivebuddy.features.music.spotify.Pkce
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
