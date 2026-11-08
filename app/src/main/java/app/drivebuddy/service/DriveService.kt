@@ -69,6 +69,8 @@ import app.drivebuddy.features.weather.WeatherText
 import app.drivebuddy.command.YesNo
 import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
+import app.drivebuddy.features.clock.AlarmControls
+import app.drivebuddy.features.clock.AlarmText
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.TextStyle
@@ -359,6 +361,8 @@ class DriveService : Service() {
             is Command.Sms -> handleSms(command.name, command.body)
             is Command.Nearby -> handleNearby(command.what)
             is Command.News -> handleNews(command.world)
+            is Command.AlarmInfo -> handleAlarmInfo(command.showList)
+            is Command.CancelAlarm -> handleCancelAlarm()
             Command.Weather -> handleWeather()
             Command.Time -> { val now = LocalTime.now(); reply(TimeText.time(now.hour, now.minute)) }
             Command.Date -> {
@@ -809,6 +813,20 @@ class DriveService : Service() {
         inChat = true
         buddy.reset() // a new wake-up starts a new conversation
         askBuddy(text)
+    }
+
+    private fun handleAlarmInfo(showList: Boolean) {
+        if (showList) { reply(AlarmControls.showList(this)); return }
+        val at = AlarmControls.nextAlarmAt(this)
+        Log.i(TAG, "alarms: next alarm lookup -> ${if (at == null) "none" else "found"}")
+        reply(if (at == null) "You have no alarms set." else AlarmText.next(at, System.currentTimeMillis()))
+    }
+
+    private fun handleCancelAlarm() {
+        Log.i(TAG, "alarms: cancel asked; the OnePlus Clock ignores turn-off requests, opening its list instead")
+        reply("Your clock app won't let me switch alarms off. I'll open your alarms so you can do it.") {
+            AlarmControls.showList(this)
+        }
     }
 
     private fun handleNews(world: Boolean) {

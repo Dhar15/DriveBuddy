@@ -12,6 +12,13 @@ sealed class RemindWhen {
     data class At(val hour: Int, val minute: Int, val pm: Boolean?, val tomorrow: Boolean) : RemindWhen()
 }
 
+/** Which alarm "cancel" refers to. */
+sealed class AlarmTarget {
+    object Next : AlarmTarget()
+    object All : AlarmTarget()
+    data class At(val hour: Int, val minute: Int, val pm: Boolean?) : AlarmTarget()
+}
+
 /** What the router decided the user wants. */
 sealed class Command {
     object Empty : Command()
@@ -42,6 +49,10 @@ sealed class Command {
     data class Sms(val name: String, val body: String?) : Command()
     data class AddTodo(val item: String, val list: String) : Command()
     data class News(val world: Boolean) : Command()
+
+    data class AlarmInfo(val showList: Boolean) : Command()
+
+    data class CancelAlarm(val target: AlarmTarget) : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -104,6 +115,31 @@ object CommandParser {
                 "(?:(?:latest|top) )?(world |international |global )?(?:news|headlines)(?: today| now| right now| please)?$"
     )
 
+    private val alarmWord = Regex("\\balarms?\\b")
+    private val cancelVerb = Regex("^(?:cancel|delete|remove|turn off|switch off|disable|dismiss|clear|stop) (.+)$")
+    private val everyAlarm = Regex("\\b(?:all|every|everything)\\b|\\balarms\\b")
+    private val cancelTime = Regex("\\b(\\d{1,2})(?: (\\d{2}))?(?: (a m|p m|am|pm))?\\b")
+    private val alarmShow = Regex("^(?:show|list)|^what are")
+    private val alarmInfoRule = Regex(
+        "^(?:(?:what(?:'s|s| is)|when(?:'s|s| is)) (?:my |the )?(?:next |upcoming )?alarm(?: set for| set| time)?|" +
+                "(?:do i have|have i got|is there) (?:an |any |a )?alarms?(?: set)?|" +
+                "(?:check|show|list|tell me|what are) (?:me )?(?:my |the )?(?:next |upcoming )?alarms?)$"
+    )
+
+    /** "what's my next alarm", "cancel the 7 am alarm", "turn off all alarms". Checked before alarm setting. */
+    private fun parseAlarmCommand(core: String): Command? {
+        if (alarmInfoRule.matches(core)) return Command.AlarmInfo(showList = alarmShow.containsMatchIn(core))
+        val rest = cancelVerb.find(core)?.groupValues?.get(1) ?: return null
+        if (!alarmWord.containsMatchIn(rest)) return null
+        if (everyAlarm.containsMatchIn(rest)) return Command.CancelAlarm(AlarmTarget.All)
+        val time = cancelTime.find(rest) ?: return Command.CancelAlarm(AlarmTarget.Next)
+        val hour = time.groupValues[1].toInt()
+        val minute = time.groupValues[2].ifEmpty { "0" }.toInt()
+        if (hour > 23 || minute > 59) return null
+        val pm = when (time.groupValues[3].replace(" ", "")) { "am" -> false; "pm" -> true; else -> null }
+        return Command.CancelAlarm(AlarmTarget.At(hour, minute, pm))
+    }
+
     fun parse(raw: String): Command {
         val normalized = raw.lowercase().replace(nonWord, " ").replace(spaces, " ").trim()
         if (normalized.isEmpty()) return Command.Empty
@@ -128,6 +164,8 @@ object CommandParser {
         if (timeRule.matches(core)) return Command.Time
         if (dateRule.matches(core)) return Command.Date
         newsRule.find(core)?.let { return Command.News(world = it.groupValues[1].isNotBlank()) }
+
+        parseAlarmCommand(core)?.let { return it }
         parseSms(core)?.let { return it }
         parseMemory(core)?.let { return it }
         parseSwitch(core)?.let { return it }
