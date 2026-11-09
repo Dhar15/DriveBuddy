@@ -117,7 +117,8 @@ external APIs, and integrations.
 
 | Component | Responsibility |
 |---|---|
-| `service/DriveService` | The heart. Foreground service (microphone type). Owns the interaction state machine, follow-up questions, watchdog, audio focus and the wiring between every other piece |
+| `service/DriveService` | The heart. Foreground service (microphone type). Owns the interaction state machine, follow-up questions, watchdog and audio focus, and routes each command to its feature handler. Also holds the chat conversation and plain navigation |
+| `service/Conversation` | The narrow interface a feature handler uses to talk to the service: speak, ask, show cards, yes/no, late messages. Keeps handlers small and testable |
 | `DriveVoiceService`, `DriveSessionService`, `DriveRecognitionService` | Register DriveBuddy as an Android assistant, which exempts it from background-start limits so the wake word can launch a session with the app closed |
 | `audio/OpenWakeWord`, `audio/WakeWord` | Wake-word detection loop on a background thread |
 | `audio/SpeechCapture` | `SpeechRecognizer` wrapper: on-device engine preferred, restart-after-pause and release-after-each-result to avoid "busy" races |
@@ -144,25 +145,25 @@ Organised by feature, so everything for one capability sits in one folder.
 app.drivebuddy
 ├─ DriveVoiceService, DriveSessionService, DriveRecognitionService
 │                      system-bound entry points (kept at the root: Android stores them by name)
-├─ service/            DriveService (interaction state machine), OverlayAnchor
+├─ service/            DriveService (interaction state machine, routing), Conversation (what handlers may ask of it), OverlayAnchor
 ├─ ui/                 MainActivity, SetupActivity, SettingsActivity, PlacesActivity, JourneyActivity,
 │                      OrbView, DriveState (DriveBus), ReadAlong
 ├─ audio/              WakeWord, SpeechCapture, Speaker, AckVoice, Cue
 ├─ command/            CommandParser (Command, AlarmTarget), YesNo
-├─ common/             LatencyTracker, LatencyLog, LocationHelper
+├─ common/             LatencyTracker, LatencyLog, LocationHelper, LogText
 └─ features/
-   ├─ music/           spotify/* (auth, API, token vault, Pkce), PlayIntent, SongQuery, TrackPicker, MediaListener
+   ├─ music/           MusicHandler, spotify/* (auth, API, token vault, Pkce), PlayIntent, SongQuery, TrackPicker, MediaListener
    ├─ navigation/      SavedPlaces, Journeys
-   ├─ nearby/          NearbyClient, NearbyText, PlaceChoice, TripEstimate
-   ├─ news/            NewsClient, NewsText, NewsPicker, NewsSeen, StoryChoice
-   ├─ weather/         WeatherClient, WeatherText
+   ├─ nearby/          NearbyHandler, NearbyClient, NearbyText, PlaceChoice, TripEstimate
+   ├─ news/            NewsHandler, NewsClient, NewsText, NewsPicker, NewsSeen, StoryChoice
+   ├─ weather/         WeatherHandler, WeatherClient, WeatherText
    ├─ chat/            LlmClient, BuddyChat, ChatQuota, DailyCap
-   ├─ communication/   NameMatcher, SmsText
-   ├─ clock/           AlarmTime, ReminderTime, TimeText, AlarmText, AlarmControls
+   ├─ communication/   CommunicationHandler (calls and texts), NameMatcher, SmsText
+   ├─ clock/           AlarmHandler, AlarmTime, ReminderTime, TimeText, AlarmText, AlarmControls
    └─ phone/           PhoneActions, PhoneControls, AppMatcher
 ```
 
-The unit tests mirror this layout. The next planned refactor is to give each feature its own small handler class so `DriveService` only routes.
+The unit tests mirror this layout. Each voice feature has a small handler class next to its logic (`NewsHandler`, `NearbyHandler`, `MusicHandler`, and so on). A handler never touches the service directly: it receives a `Conversation` and uses only that, so `DriveService` stays a router plus the plumbing for listening, speaking and follow-up questions.
 
 ---
 
@@ -276,7 +277,7 @@ There is no DriveBuddy server, no analytics SDK and no account.
 - **Wake-word audio stays on the phone.** Detection is fully on-device.
 - **Secrets stay out of git.** The Maps/Places key lives in `local.properties` (git-ignored) and reaches the app through `BuildConfig.MAPS_API_KEY`. The Groq chat key is handled the same way (`GROQ_API_KEY`). The Spotify client ID is committed on purpose: with PKCE it is not a secret.
 - **Tokens encrypted at rest** with a hardware-backed Keystore key.
-- **Logs never contain** phone numbers or coordinates. Spoken text is logged as spoken, so contact names, search text, destinations, texts read back for confirmation and chat replies can appear, since the app is single-user and the log is the owner's. Redacting those is on the roadmap.
+- **Logs never contain** phone numbers or coordinates. Spoken text is logged as spoken, so contact names, search text and destinations can appear, since the app is single-user and the log is the owner's. The exceptions are private text: the body of a text message (and its read-back and confirmation), and the chat conversation in both directions, are logged only as a character count (`LogText`), and the saved latency file records `(not logged)` for them.
 - **Confirmation before sending** any text message.
 - **Least privilege:** each permission exists for a named feature (see [Permissions](#permissions)); permissions are requested on first run and can be re-toggled from Settings.
 - **Locked-phone policy:** calls, texts and app launching deliberately keep working on a locked phone, because that is exactly when you are driving.
@@ -440,10 +441,9 @@ Next, roughly in order:
 4. **Stop navigation** by voice (best effort).
 5. **Recogniser hint phrases** built from your artists, playlists and contacts.
 6. **Traffic, ETA and places along the route** with minimal detour (Google Routes API; free allowance and quota cap to be checked first).
-7. **Housekeeping:** shorter spoken place list, tidier nearby-search label, remove leftover probe code, scan git history for secrets, and stop writing text-message bodies and chat replies into the log.
+7. **Housekeeping:** shorter spoken place list and a tidier nearby-search label.
 8. **News next steps:** "tell me more about story two" (short summary through the chat model), and mixing several feeds into one list.
-9. **Code structure:** split `DriveService` into per-feature handler classes now that the files are grouped by feature.
-10. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
+9. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
 
 ---
 
