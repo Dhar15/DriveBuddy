@@ -1,12 +1,12 @@
 package app.drivebuddy.service
 
 import android.Manifest
-import app.drivebuddy.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
@@ -14,69 +14,50 @@ import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.net.Uri
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import app.drivebuddy.features.chat.ChatQuota
-import app.drivebuddy.ui.ChoiceCard
-import app.drivebuddy.ui.ChoiceRow
-import app.drivebuddy.ui.DriveBus
-import app.drivebuddy.ui.DriveState
-import app.drivebuddy.features.navigation.Journeys
-import app.drivebuddy.common.LatencyLog
-import app.drivebuddy.features.chat.LlmClient
-import app.drivebuddy.common.LocationHelper
-import app.drivebuddy.ui.MainActivity
-import app.drivebuddy.features.nearby.NearbyClient
-import app.drivebuddy.features.news.NewsClient
-import app.drivebuddy.features.news.NewsSeen
-import app.drivebuddy.features.phone.PhoneActions
-import app.drivebuddy.features.phone.PhoneControls
-import app.drivebuddy.features.navigation.SavedPlaces
-import app.drivebuddy.features.weather.WeatherClient
+import app.drivebuddy.R
 import app.drivebuddy.audio.AckVoice
 import app.drivebuddy.audio.Cue
 import app.drivebuddy.audio.Speaker
 import app.drivebuddy.audio.SpeechCapture
 import app.drivebuddy.audio.WakeWord
-import app.drivebuddy.features.chat.BuddyChat
-import app.drivebuddy.features.communication.Candidate
 import app.drivebuddy.command.Command
 import app.drivebuddy.command.CommandParser
-import app.drivebuddy.features.news.Headline
-import app.drivebuddy.common.LatencyTracker
-import app.drivebuddy.common.Mark
-import app.drivebuddy.features.communication.MatchResult
 import app.drivebuddy.command.MediaAction
-import app.drivebuddy.features.communication.NameMatcher
-import app.drivebuddy.features.nearby.NearbyText
-import app.drivebuddy.features.news.NewsPicker
-import app.drivebuddy.features.news.NewsText
-import app.drivebuddy.features.nearby.PlaceChoice
-import app.drivebuddy.features.music.PlayIntent
-import app.drivebuddy.features.nearby.RankedPlace
-import app.drivebuddy.ui.ReadAlong
-import app.drivebuddy.features.communication.SmsText
-import app.drivebuddy.features.news.StoryChoice
-import app.drivebuddy.features.clock.TimeText
-import app.drivebuddy.features.music.TrackCandidate
-import app.drivebuddy.features.music.TrackPicker
-import app.drivebuddy.features.nearby.TripEstimate
-import app.drivebuddy.command.VolumeOp
-import app.drivebuddy.features.weather.WeatherText
 import app.drivebuddy.command.YesNo
+import app.drivebuddy.common.LatencyLog
+import app.drivebuddy.common.LatencyTracker
+import app.drivebuddy.common.LocationHelper
+import app.drivebuddy.common.LogText
+import app.drivebuddy.common.Mark
+import app.drivebuddy.features.chat.BuddyChat
+import app.drivebuddy.features.chat.ChatQuota
+import app.drivebuddy.features.chat.LlmClient
+import app.drivebuddy.features.clock.AlarmHandler
+import app.drivebuddy.features.clock.TimeText
+import app.drivebuddy.features.communication.CommunicationHandler
+import app.drivebuddy.features.music.MusicHandler
 import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
-import app.drivebuddy.features.clock.AlarmControls
-import app.drivebuddy.features.clock.AlarmText
-import app.drivebuddy.common.LogText
+import app.drivebuddy.features.navigation.Journeys
+import app.drivebuddy.features.navigation.SavedPlaces
+import app.drivebuddy.features.nearby.NearbyHandler
+import app.drivebuddy.features.news.NewsHandler
+import app.drivebuddy.features.phone.PhoneActions
+import app.drivebuddy.features.phone.PhoneControls
+import app.drivebuddy.features.weather.WeatherHandler
+import app.drivebuddy.ui.ChoiceCard
+import app.drivebuddy.ui.DriveBus
+import app.drivebuddy.ui.DriveState
+import app.drivebuddy.ui.MainActivity
+import app.drivebuddy.ui.ReadAlong
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.TextStyle
 import java.util.Locale
-import kotlin.concurrent.thread
 
 /**
  * Milestone 1 service: keeps the microphone foreground service alive for a drive and runs one
@@ -95,9 +76,6 @@ class DriveService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "DriveBuddy"
         private const val INTERACTION_TIMEOUT_MS = 15_000L
-        private const val SPOTIFY = "com.spotify.music"
-        private const val YOUTUBE_MUSIC = "com.google.android.apps.youtube.music"
-        private const val RECONNECT_SPOTIFY = "Spotify isn't connected. Open Permissions and tap Connect Spotify."
 
         /** Set by the activity so the screen can show status. Always invoked on the main thread. */
         @Volatile
@@ -137,7 +115,37 @@ class DriveService : Service() {
     private var inChat = false // true from the first buddy reply until the conversation ends
     private lateinit var llm: LlmClient
     private lateinit var quota: ChatQuota
-    private val newsSeen by lazy { NewsSeen(this) }
+
+    // What feature handlers may ask of this service. Calls are qualified because the names match ours.
+    private val conversation = object : Conversation {
+        override val context: Context get() = this@DriveService
+        override val destroyed: Boolean get() = this@DriveService.destroyed
+        override fun reply(text: String, quiet: Boolean, onProgress: ((Int) -> Unit)?, afterSpeaking: (() -> Unit)?) =
+            this@DriveService.reply(text, quiet, onProgress, afterSpeaking)
+        override fun ask(prompt: String, onProgress: ((Int) -> Unit)?, quiet: Boolean, onAnswer: (String) -> Unit) =
+            this@DriveService.ask(prompt, onProgress, quiet, onAnswer)
+        override fun publish(status: String, state: DriveState) = this@DriveService.publish(status, state)
+        override fun post(block: () -> Unit) { main.post { block() } }
+        override fun pauseWatchdog() = main.removeCallbacks(watchdog)
+        override fun finish() = finishInteraction()
+        override fun showCards(card: ChoiceCard) {
+            DriveBus.showChoices(card)
+            DriveBus.choiceTap = { token -> onChoiceTapped(token) }
+            bringScreenToFront()
+        }
+        override fun slideAlong(text: String, markers: List<String>) = this@DriveService.slideAlong(text, markers)
+        override fun locationReady(feature: String) = this@DriveService.locationReady(feature)
+        override fun startNavigation(name: String, query: String) = this@DriveService.startNearbyNavigation(name, query)
+        override fun askYesNo(prompt: String, quiet: Boolean, onYes: () -> Unit) =
+            this@DriveService.askYesNo(prompt, onYes = onYes, quiet = quiet)
+        override fun speakLate(text: String) = this@DriveService.speakLate(text)
+    }
+    private val news by lazy { NewsHandler(conversation) }
+    private val nearby by lazy { NearbyHandler(conversation) }
+    private val weather by lazy { WeatherHandler(conversation) }
+    private val alarms by lazy { AlarmHandler(conversation) }
+    private val comms by lazy { CommunicationHandler(conversation, actions) }
+    private val music by lazy { MusicHandler(conversation, actions, spotifyAuth, spotify) }
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -350,9 +358,12 @@ class DriveService : Service() {
                 command.action == MediaAction.STOP -> reply("Okay.")
                 else -> reply("I don't see a music app to control.")
             }
-            is Command.Play -> handlePlay(command)
-            is Command.Volume -> handleVolume(command)
-            is Command.Call -> handleCall(command.name)
+            is Command.Play -> music.play(command)
+            is Command.Volume -> music.volume(command)
+            is Command.Call -> comms.call(command.name)
+            is Command.Sms -> comms.sms(command.name, command.body)
+            is Command.AlarmInfo -> alarms.info(command.showList)
+            is Command.CancelAlarm -> alarms.cancel()
             is Command.Navigate -> handleNavigate(command.destination)
             is Command.Flashlight -> reply(PhoneControls.flashlight(this, command.on))
             is Command.Dnd -> reply(PhoneControls.dnd(this, command.on))
@@ -362,12 +373,9 @@ class DriveService : Service() {
             is Command.Remind -> reply(PhoneControls.reminder(this, command.text, command.whenAt))
             is Command.AddTodo -> reply(PhoneControls.listItem(this, command.item, command.list))
             is Command.Note -> reply(PhoneControls.note(this, command.text))
-            is Command.Sms -> handleSms(command.name, command.body)
-            is Command.Nearby -> handleNearby(command.what)
-            is Command.News -> handleNews(command.world)
-            is Command.AlarmInfo -> handleAlarmInfo(command.showList)
-            is Command.CancelAlarm -> handleCancelAlarm()
-            Command.Weather -> handleWeather()
+            is Command.Nearby -> nearby.handle(command.what)
+            is Command.News -> news.handle(command.world)
+            Command.Weather -> weather.handle()
             Command.Time -> { val now = LocalTime.now(); reply(TimeText.time(now.hour, now.minute)) }
             Command.Date -> {
                 val today = LocalDate.now()
@@ -382,187 +390,6 @@ class DriveService : Service() {
         }
     }
 
-    private fun handlePlay(command: Command.Play) {
-        if (command.target == "youtube music") {
-            if (!actions.isInstalled(YOUTUBE_MUSIC)) {
-                reply("I don't see YouTube Music on this phone.")
-                return
-            }
-            reply("Playing ${command.query}.") {
-                if (!actions.playFromSearch(command.query, "youtube music")) Log.w(TAG, "could not start playback")
-            }
-            return
-        }
-        if (!spotifyAuth.isConnected()) {
-            reply(RECONNECT_SPOTIFY)
-            return
-        }
-        when (val intent = PlayIntent.Companion.parse(command.query)) {
-            is PlayIntent.Artist -> { Log.i(TAG, "play: artist request"); playArtist(intent.name); return }
-            PlayIntent.Any -> { Log.i(TAG, "play: any song (liked songs, shuffled)"); playLiked(); return }
-            is PlayIntent.Song -> Unit
-            is PlayIntent.Playlist -> { Log.i(TAG, "play: my playlist request"); playPlaylist(intent.name); return }
-            PlayIntent.AnyPlaylist -> { Log.i(TAG, "play: any of my playlists"); playPlaylist(null); return }
-        }
-        publish("Asking Spotify...", DriveState.THINKING)
-        // Network calls stay off the main thread. Search first, speak, and only then start the music.
-        Thread {
-            main.removeCallbacks(watchdog) // waking Spotify can take several seconds
-            val track = when (val found = spotify.search(command.query)) {
-                is SpotifyApi.SearchResult.Found -> found.track
-                SpotifyApi.SearchResult.NotFound -> { main.post { reply("I couldn't find ${command.query} on Spotify.") }; return@Thread }
-                SpotifyApi.SearchResult.NotConnected -> { main.post { reply(RECONNECT_SPOTIFY) }; return@Thread }
-                is SpotifyApi.SearchResult.Failed -> {
-                    Log.w(TAG, "spotify search failed: ${found.why}")
-                    main.post { reply("I couldn't reach Spotify.") }
-                    return@Thread
-                }
-            }
-            main.post { if (!destroyed) announceThenPlay(track) }
-        }.start()
-    }
-
-    private fun handleVolume(command: Command.Volume) {
-        val change = actions.changeVolume(command.op, command.percent)
-        if (change == null) {
-            Log.w(TAG, "volume ${command.op} failed")
-            reply("I couldn't change the volume.")
-            return
-        }
-        Log.i(TAG, "volume ${command.op} ${command.percent}%: ${change.before}% -> ${change.after}%, muted=${change.muted}")
-        reply(
-            when {
-                command.op == VolumeOp.MUTE -> "Muted."
-                command.op == VolumeOp.UP && change.after == change.before -> "Volume is already at maximum."
-                command.op == VolumeOp.DOWN && change.after == change.before -> "Volume is already at minimum."
-                else -> "Volume ${change.after} percent."
-            }
-        )
-    }
-
-    /** Speaks first so the voice is heard at full volume, then starts the music. */
-    private fun announceThenPlay(track: SpotifyApi.Track) {
-        reply("Playing ${track.name} by ${track.artist}.") {
-            Thread {
-                val problem = spotifyFailureMessage(track)
-                if (problem != null) main.post { speakLate(problem) }
-            }.start()
-        }
-    }
-
-    private fun playArtist(name: String) {
-        publish("Asking Spotify...", DriveState.THINKING)
-        Thread {
-            main.removeCallbacks(watchdog)
-            when (val found = spotify.findArtist(name)) {
-                is SpotifyApi.ArtistResult.Found ->
-                    main.post { if (!destroyed) announceThenPlayContext(found.artist.uri, found.artist.name, "songs by ${found.artist.name}") }
-                SpotifyApi.ArtistResult.NotFound -> main.post { reply("I couldn't find an artist called $name on Spotify.") }
-                SpotifyApi.ArtistResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
-                is SpotifyApi.ArtistResult.Failed -> {
-                    Log.w(TAG, "spotify artist search failed: ${found.why}")
-                    main.post { reply("I couldn't reach Spotify.") }
-                }
-            }
-        }.start()
-    }
-
-    private fun playLiked() {
-        publish("Asking Spotify...", DriveState.THINKING)
-        Thread {
-            main.removeCallbacks(watchdog)
-            when (val liked = spotify.likedSongs()) {
-                is SpotifyApi.LikedResult.Ready ->
-                    main.post { if (!destroyed) announceThenPlayContext(liked.contextUri, "liked songs", "your liked songs") }
-                SpotifyApi.LikedResult.Empty -> main.post { reply("You don't have any liked songs yet.") }
-                SpotifyApi.LikedResult.NeedsPermission ->
-                    main.post { reply("I need one more Spotify permission. Open Permissions and tap Connect Spotify again.") }
-                SpotifyApi.LikedResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
-                is SpotifyApi.LikedResult.Failed -> {
-                    Log.w(TAG, "spotify liked songs failed: ${liked.why}")
-                    main.post { reply("I couldn't reach Spotify.") }
-                }
-            }
-        }.start()
-    }
-
-    /** [name] null means "any of my playlists". */
-    private fun playPlaylist(name: String?) {
-        publish("Asking Spotify...", DriveState.THINKING)
-        Thread {
-            main.removeCallbacks(watchdog)
-            when (val result = spotify.myPlaylists()) {
-                is SpotifyApi.PlaylistsResult.Ready -> {
-                    val list = result.playlists
-                    val chosen = if (name == null) {
-                        list.random()
-                    } else {
-                        val i = TrackPicker.best(name, list.map {
-                            TrackCandidate(
-                                it.name,
-                                emptyList(),
-                                0
-                            )
-                        })
-                        if (i < 0) null else list[i]
-                    }
-                    if (chosen == null) {
-                        Log.i(TAG, "play: no playlist matched among ${list.size}")
-                        main.post { reply("I couldn't find a playlist called $name.") }
-                    } else {
-                        Log.i(TAG, "play: playlist chosen from ${list.size}")
-                        main.post { if (!destroyed) announceThenPlayContext(chosen.uri, chosen.name, "your playlist ${chosen.name}") }
-                    }
-                }
-                SpotifyApi.PlaylistsResult.Empty -> main.post { reply("You don't have any playlists yet.") }
-                SpotifyApi.PlaylistsResult.NeedsPermission ->
-                    main.post { reply("I need one more Spotify permission. Open Permissions and tap Connect Spotify again.") }
-                SpotifyApi.PlaylistsResult.NotConnected -> main.post { reply(RECONNECT_SPOTIFY) }
-                is SpotifyApi.PlaylistsResult.Failed -> {
-                    Log.w(TAG, "spotify playlists failed: ${result.why}")
-                    main.post { reply("I couldn't reach Spotify.") }
-                }
-            }
-        }.start()
-    }
-
-    /** Speaks first, then starts the shuffled context, like announceThenPlay does for a single track. */
-    private fun announceThenPlayContext(uri: String, label: String, spoken: String) {
-        reply("Playing $spoken, shuffled.") {
-            Thread {
-                val problem = failureText(spotify.playContext(uri, label) { actions.openApp(SPOTIFY) })
-                if (problem != null) main.post { speakLate(problem) }
-            }.start()
-        }
-    }
-
-    /** Runs on a background thread. Returns what to say if playback did not start, or null when it did. */
-    private fun spotifyFailureMessage(track: SpotifyApi.Track): String? =
-        when (val played = spotify.play(track) { actions.openApp(SPOTIFY) }) {
-            SpotifyApi.PlayResult.Started -> null
-            SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
-            SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
-            SpotifyApi.PlayResult.NotPlaying -> "Spotify accepted it but didn't start playing. Please try again."
-            SpotifyApi.PlayResult.Refused -> "Spotify refused to play. Check that Premium is active."
-            is SpotifyApi.PlayResult.Failed -> {
-                Log.w(TAG, "spotify play failed: ${played.why}")
-                "Spotify didn't respond."
-            }
-        }
-
-    private fun failureText(played: SpotifyApi.PlayResult): String? =
-        when (played) {
-            SpotifyApi.PlayResult.Started -> null
-            SpotifyApi.PlayResult.NoDevice -> "Spotify isn't running on this phone. Open Spotify once and try again."
-            SpotifyApi.PlayResult.NotConnected -> RECONNECT_SPOTIFY
-            SpotifyApi.PlayResult.NotPlaying -> "Spotify accepted it but didn't start playing. Please try again."
-            SpotifyApi.PlayResult.Refused -> "Spotify refused to play. Check that Premium is active."
-            is SpotifyApi.PlayResult.Failed -> {
-                Log.w(TAG, "spotify play failed: ${played.why}")
-                "Spotify didn't respond."
-            }
-        }
-
     /** A message that arrives after the interaction already finished (a failure we only learned about later). */
     private fun speakLate(text: String) {
         if (busy || destroyed) {
@@ -576,173 +403,6 @@ class DriveService : Service() {
         tracker.command = "late: spotify"
         requestFocus()
         reply(text)
-    }
-
-    private fun handleCall(spoken: String) {
-        if (!actions.hasContactsPermission()) {
-            reply("I need permission to read your contacts.")
-            return
-        }
-        when (val match = NameMatcher.match(spoken, actions.loadContacts())) {
-            is MatchResult.Single -> {
-                val who = match.candidate
-                reply("Calling ${who.name}. Tap Talk to cancel.") {
-                    if (!actions.placeCall(who.number)) Log.w(TAG, "call to ${who.name} could not be placed")
-                }
-            }
-            is MatchResult.Ambiguous ->
-                reply("I found ${match.candidates.joinToString(" and ") { it.name }}. Please say the full name.")
-            MatchResult.None -> reply("I couldn't find $spoken in your contacts.")
-        }
-    }
-
-    private fun handleSms(spoken: String, body: String?) {
-        if (!actions.hasContactsPermission()) {
-            reply("I need permission to read your contacts.")
-            return
-        }
-        if (!actions.hasSmsPermission()) {
-            Log.w(TAG, "sms: permission missing")
-            reply("I need permission to send text messages. Open Permissions in DriveBuddy and turn it on.")
-            return
-        }
-        val contacts = actions.loadContacts()
-        var message = body
-        var match = NameMatcher.match(spoken, contacts)
-        if (match == MatchResult.None && body == null) {
-            // "text papa hello": there was no "saying", so the words after the contact's name are the message.
-            val words = spoken.split(" ").filter { it.isNotEmpty() }
-            for (k in words.size - 1 downTo 1) {
-                val tryName = words.take(k).joinToString(" ")
-                val m = NameMatcher.match(tryName, contacts)
-                if (m != MatchResult.None) {
-                    match = m
-                    message = words.drop(k).joinToString(" ")
-                    Log.i(TAG, "sms: read \"$tryName\" as the name and the rest as the message")
-                    break
-                }
-            }
-        }
-        when (val found = match) {
-            is MatchResult.Single -> {
-                val who = found.candidate
-                if (message.isNullOrBlank()) {
-                    ask("What should I say to ${who.name}?", quiet = true) { answer ->
-                        if (answer.isBlank()) reply("I didn't catch the message.") else confirmSms(who, SmsText.tidy(answer))
-                    }
-                } else {
-                    confirmSms(who, SmsText.tidy(message))
-                }
-            }
-            is MatchResult.Ambiguous ->
-                reply("I found ${found.candidates.joinToString(" and ") { it.name }}. Please say the full name.")
-            MatchResult.None -> reply("I couldn't find $spoken in your contacts.")
-        }
-    }
-
-    private fun handleNearby(what: String) {
-        Log.i(TAG, "nearby: asked for '$what'")
-        if (!locationReady("nearby")) return
-        main.removeCallbacks(watchdog) // location + network can outlast the watchdog
-        publish("Looking for $what...")
-        LocationHelper.current(this) { location ->
-            if (location == null) {
-                reply("I couldn't find your location.")
-                return@current
-            }
-            thread(name = "nearby") {
-                val places = NearbyClient.search(what, location.latitude, location.longitude)
-                main.post {
-                    when {
-                        places == null -> reply("I couldn't search for places right now.")
-                        places.isEmpty() -> reply("I couldn't find any $what nearby.")
-                        else -> offerBatch(
-                            what,
-                            NearbyText.rank(
-                                places,
-                                location.latitude,
-                                location.longitude,
-                                limit = 20
-                            ),
-                            0
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    /** Shows and reads out places [start]..[start]+2, then waits for "one", "two", "three", "more" or "cancel". */
-    private fun offerBatch(what: String, ranked: List<RankedPlace>, start: Int) {
-        val batch = ranked.drop(start).take(NearbyText.BATCH)
-        if (batch.isEmpty()) {
-            Log.i(TAG, "nearby: no more results for '$what'")
-            DriveBus.showChoices(null)
-            reply("That's all I found for $what nearby.")
-            return
-        }
-        val more = start + batch.size < ranked.size
-        Log.i(TAG, "nearby: offering results ${start + 1}-${start + batch.size} of ${ranked.size}")
-        DriveBus.showChoices(
-            ChoiceCard(
-                title = what.replaceFirstChar { it.uppercase() },
-                rows = batch.map {
-                    ChoiceRow(
-                        NearbyText.shortName(it.place.name),
-                        NearbyText.shortDistance(it.meters),
-                        TripEstimate.byCar(it.meters.toDouble()),
-                    )
-                },
-                hint = NearbyText.hint(batch.size),
-                hasMore = more,
-                paged = true,
-                compact = true,
-            ),
-        )
-        DriveBus.choiceTap = { token -> onChoiceTapped(token) }
-        bringScreenToFront()
-        val prompt = NearbyText.offerBatch(batch, start == 0, more)
-        askBatch(
-            what, ranked, start, batch, more, prompt, retried = false,
-            onProgress = slideAlong(prompt, batch.map { NearbyText.shortName(it.place.name) }),
-        )
-    }
-
-    private fun askBatch(
-        what: String, ranked: List<RankedPlace>, start: Int, batch: List<RankedPlace>,
-        more: Boolean, prompt: String, retried: Boolean, onProgress: ((Int) -> Unit)? = null,
-    ) {
-        ask(prompt, onProgress) { raw ->
-            val tapped = raw.startsWith("tap:")
-            val choice = PlaceChoice.Companion.parse(raw.removePrefix("tap:"), batch.size)
-            Log.i(TAG, "nearby: answer -> $choice (tapped=$tapped)")
-            when (choice) {
-                is PlaceChoice.Pick -> {
-                    val r = batch[choice.number - 1]
-                    val go = {
-                        startNearbyNavigation(
-                            NearbyText.shortName(r.place.name),
-                            "${r.place.latitude},${r.place.longitude}",
-                        )
-                    }
-                    if (tapped) {
-                        Log.i(TAG, "nearby: navigating to #${choice.number} straight away (tapped)")
-                        go()
-                        finishInteraction()
-                    } else {
-                        reply("Starting navigation to ${NearbyText.shortName(r.place.name)}.") { go() }
-                    }
-                }
-                PlaceChoice.More -> offerBatch(what, ranked, start + batch.size)
-                PlaceChoice.Cancel -> if (tapped) finishInteraction() else reply("Okay.")
-                PlaceChoice.Unknown ->
-                    if (!retried) {
-                        askBatch(what, ranked, start, batch, more, NearbyText.retryPrompt(batch.size, more), true)
-                    } else {
-                        reply("Okay, cancelled.")
-                    }
-            }
-        }
     }
 
     /** A button on the pick-one card was tapped: cut off the read-out or the listening and deliver it as the answer. */
@@ -784,29 +444,6 @@ class DriveService : Service() {
         }
     }
 
-    private fun handleWeather() {
-        Log.i("DriveBuddy", "weather: asked")
-        if (!locationReady("weather")) return
-        main.removeCallbacks(watchdog) // location + network can outlast the watchdog
-        publish("Checking the weather...")
-        LocationHelper.current(this) { location ->
-            if (location == null) {
-                reply("I couldn't find your location.")
-                return@current
-            }
-            thread(name = "weather") {
-                val weather = WeatherClient.fetch(location.latitude, location.longitude)
-                main.post {
-                    reply(
-                        if (weather == null) "I couldn't get the weather right now." else WeatherText.speak(
-                            weather
-                        )
-                    )
-                }
-            }
-        }
-    }
-
     /** Anything the parser doesn't recognise becomes a chat with the buddy. */
     private fun handleChat(text: String) {
         if (!quota.canUse()) {
@@ -817,91 +454,6 @@ class DriveService : Service() {
         inChat = true
         buddy.reset() // a new wake-up starts a new conversation
         askBuddy(text)
-    }
-
-    private fun handleAlarmInfo(showList: Boolean) {
-        if (showList) { reply(AlarmControls.showList(this)); return }
-        val at = AlarmControls.nextAlarmAt(this)
-        Log.i(TAG, "alarms: next alarm lookup -> ${if (at == null) "none" else "found"}")
-        reply(if (at == null) "You have no alarms set." else AlarmText.next(at, System.currentTimeMillis()))
-    }
-
-    private fun handleCancelAlarm() {
-        Log.i(TAG, "alarms: cancel asked; the OnePlus Clock ignores turn-off requests, opening its list instead")
-        reply("Your clock app won't let me switch alarms off. I'll open your alarms so you can do it.") {
-            AlarmControls.showList(this)
-        }
-    }
-
-    private fun handleNews(world: Boolean) {
-        Log.i(TAG, "news: asked (world=$world)")
-        main.removeCallbacks(watchdog)
-        publish("Getting the news...", DriveState.THINKING)
-        thread(name = "news") {
-            val all = NewsClient.headlines(if (world) NewsClient.WORLD else NewsClient.INDIA)
-            main.post {
-                if (destroyed) return@post
-                if (all == null) {
-                    reply("I couldn't get the news right now."); return@post
-                }
-                val fresh = NewsPicker.fresh(all, newsSeen.links())
-                Log.i(TAG, "news: ${all.size} in the feed, ${fresh.size} not heard before")
-                when {
-                    all.isEmpty() -> reply("I couldn't find any headlines.")
-                    fresh.isEmpty() -> reply("There's nothing new since I last checked.")
-                    else -> offerHeadlines(if (world) "the BBC" else "The Hindu", fresh, 0)
-                }
-            }
-        }
-    }
-
-    /** Shows five tiles, reads them out, then waits for a number, "more" or "done". */
-    private fun offerHeadlines(source: String, fresh: List<Headline>, start: Int) {
-        val batch = fresh.drop(start).take(NewsText.BATCH)
-        if (batch.isEmpty()) {
-            DriveBus.showChoices(null)
-            reply("That's all the new headlines I have.")
-            return
-        }
-        newsSeen.mark(batch)
-        val more = start + batch.size < fresh.size
-        Log.i(TAG, "news: showing ${start + 1}-${start + batch.size} of ${fresh.size} new")
-        DriveBus.showChoices(
-            ChoiceCard(
-                title = "News",
-                rows = batch.map { ChoiceRow(it.title, source, NewsText.tile(it.summary, 120)) },
-                hint = "Swipe for the next story, or say its number",
-                hasMore = more,
-                paged = true,
-                action = "Read story",
-            ),
-        )
-        DriveBus.choiceTap = { token -> onChoiceTapped(token) }
-        bringScreenToFront()
-        val tail = if (more) " Say a number to open one, more, or done." else " Say a number to open one, or done."
-        val spoken = NewsText.speak(batch.map { it.title }, start == 0, source) + tail
-        ask(spoken, onProgress = slideAlong(spoken, batch.indices.map { "Number ${it + 1}." })) { raw ->
-            val tapped = raw.startsWith("tap:")
-            when (val choice = StoryChoice.parse(raw.removePrefix("tap:"), batch.size)) {
-                is PlaceChoice.Pick -> {
-                    val story = batch[choice.number - 1]
-                    Log.i(TAG, "news: opening story #${choice.number} (tapped=$tapped)")
-                    if (tapped) { openLink(story.link); finishInteraction() }
-                    else reply("Opening it on your phone.") { openLink(story.link) }
-                }
-                PlaceChoice.More -> offerHeadlines(source, fresh, start + batch.size)
-                else -> if (tapped) finishInteraction() else reply("Okay.")
-            }
-        }
-    }
-
-    private fun openLink(url: String) {
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            Log.i(TAG, "news: opened an article")
-        } catch (e: Exception) {
-            Log.w(TAG, "news: could not open the article: ${e.javaClass.simpleName}")
-        }
     }
 
     private fun askBuddy(text: String) {
@@ -1000,24 +552,6 @@ class DriveService : Service() {
                 DriveBus.slideTo(target)
             }
         }
-    }
-
-    private fun confirmSms(who: Candidate, body: String) {
-        Log.i(TAG, "sms: confirming a ${body.length}-character message to ${who.name}")
-        askYesNo("Send to ${who.name}: $body. Shall I send it?", quiet = true, onYes = {
-            main.removeCallbacks(watchdog) // the phone's report can take a few seconds; we have our own 20 s limit
-            publish("Sending...", DriveState.THINKING)
-            actions.sendSms(who.number, body) { result ->
-                reply(
-                    when (result) {
-                        PhoneActions.SmsResult.SENT -> "Message sent to ${who.name}."
-                        PhoneActions.SmsResult.FAILED -> "I couldn't send that message."
-                        PhoneActions.SmsResult.UNCONFIRMED ->
-                            "I couldn't confirm that the message was sent. Please check your messages."
-                    }
-                )
-            }
-        })
     }
 
     private fun handleNavigate(spoken: String) {
