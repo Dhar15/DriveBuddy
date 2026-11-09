@@ -9,6 +9,7 @@ import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
 import java.util.UUID
 import android.util.Log
+import app.drivebuddy.common.LogText
 
 /** Thin wrapper over Android's built-in TextToSpeech. Callbacks are delivered on the main thread. */
 class Speaker(context: Context) : TextToSpeech.OnInitListener {
@@ -93,8 +94,8 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     }
 
     /** Speaks [text]. [onStart] fires when audio actually begins; [onDone] when it ends or fails. */
-    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit, onProgress: ((Int) -> Unit)? = null) {
-        Log.i("DriveBuddy", "TTS requested: '$text', ready=$ready")
+    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit, onProgress: ((Int) -> Unit)? = null, quiet: Boolean = false) {
+        Log.i("DriveBuddy", "TTS requested: ${LogText.shown(text, quiet)}, ready=$ready")
 
         if (!ready) {
             Log.e("DriveBuddy", "TTS unavailable; skipping speech")

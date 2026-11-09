@@ -71,6 +71,7 @@ import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
 import app.drivebuddy.features.clock.AlarmControls
 import app.drivebuddy.features.clock.AlarmText
+import app.drivebuddy.common.LogText
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.TextStyle
@@ -127,8 +128,9 @@ class DriveService : Service() {
     @Volatile private var destroyed = false
     private var pausedForListening = false
     private var keepMusicPaused = false
-    private class Ask(val prompt: String, val onAnswer: (String) -> Unit)
+    private class Ask(val prompt: String, val quiet: Boolean, val onAnswer: (String) -> Unit)
     private var pendingAsk: Ask? = null                 // a question we are about to ask or have just asked
+    private var quietAnswer = false // the answer we are listening for must not be logged
     private var answerHandler: ((String) -> Unit)? = null // set while we are listening for the answer
 
     private val buddy = BuddyChat(maxExchanges = 8)
@@ -294,16 +296,18 @@ class DriveService : Service() {
             }
 
             override fun onResult(text: String) {
-                // Some recognisers skip onEndOfSpeech; make sure the mark exists.
+                main.removeCallbacks(watchdog) // we have an answer; no stale timer may fire while we reply
+                val handler = answerHandler
+                val quiet = handler != null && quietAnswer
+                quietAnswer = false
                 tracker.mark(Mark.SPEECH_END)
                 tracker.mark(Mark.STT_FINAL)
                 tracker.sttEngine = capture.engineName
-                tracker.transcript = text
-                Log.i(TAG, "transcript=\"$text\" engine=${capture.engineName}")
-                val handler = answerHandler
+                tracker.transcript = if (quiet) "(not logged)" else text
+                Log.i(TAG, "transcript=${LogText.shown(text, quiet)} engine=${capture.engineName}")
                 if (handler != null) {
                     answerHandler = null
-                    Log.i(TAG, "follow-up answer: \"$text\"")
+                    Log.i(TAG, "follow-up answer: ${LogText.shown(text, quiet)}")
                     handler(text)
                 } else {
                     respond(CommandParser.parse(text))
@@ -623,7 +627,7 @@ class DriveService : Service() {
             is MatchResult.Single -> {
                 val who = found.candidate
                 if (message.isNullOrBlank()) {
-                    ask("What should I say to ${who.name}?") { answer ->
+                    ask("What should I say to ${who.name}?", quiet = true) { answer ->
                         if (answer.isBlank()) reply("I didn't catch the message.") else confirmSms(who, SmsText.tidy(answer))
                     }
                 } else {
@@ -918,10 +922,10 @@ class DriveService : Service() {
                         } else {
                             buddy.addAssistant(spoken)
                             if (buddy.canContinue) {
-                                ask(spoken) { heard -> onChatAnswer(heard) } // speaks it, then listens for the driver's answer
+                                ask(spoken, quiet = true) { heard -> onChatAnswer(heard) } // speaks it, then listens for the driver's answer
                             } else {
                                 Log.i(TAG, "chat: reached the end of this conversation")
-                                reply(spoken)
+                                reply(spoken, quiet = true)
                             }
                         }
                     }
@@ -1000,7 +1004,7 @@ class DriveService : Service() {
 
     private fun confirmSms(who: Candidate, body: String) {
         Log.i(TAG, "sms: confirming a ${body.length}-character message to ${who.name}")
-        askYesNo("Send to ${who.name}: $body. Shall I send it?", onYes = {
+        askYesNo("Send to ${who.name}: $body. Shall I send it?", quiet = true, onYes = {
             main.removeCallbacks(watchdog) // the phone's report can take a few seconds; we have our own 20 s limit
             publish("Sending...", DriveState.THINKING)
             actions.sendSms(who.number, body) { result ->
@@ -1044,7 +1048,12 @@ class DriveService : Service() {
         return started
     }
 
-    private fun reply(text: String, afterSpeaking: (() -> Unit)? = null, onProgress: ((Int) -> Unit)? = null) {        main.removeCallbacks(watchdog)
+    private fun reply(
+        text: String,
+        quiet: Boolean = false,
+        onProgress: ((Int) -> Unit)? = null,
+        afterSpeaking: (() -> Unit)? = null,
+    ) {
         speaking = true
         interrupted = false
         publish("Speaking...", DriveState.SPEAKING)
@@ -1057,14 +1066,15 @@ class DriveService : Service() {
                 if (pendingAsk != null && !interrupted) startFollowUp() else finishInteraction()
             },
             onProgress = onProgress,
+            quiet = quiet,
         )
     }
 
     /** Says [prompt], then listens for the answer and hands the text to [onAnswer]. */
-    private fun ask(prompt: String, onProgress: ((Int) -> Unit)? = null, onAnswer: (String) -> Unit) {
-        Log.i(TAG, "follow-up: asking \"$prompt\"")
-        pendingAsk = Ask(prompt, onAnswer)
-        reply(prompt, onProgress = onProgress)
+    private fun ask(prompt: String, onProgress: ((Int) -> Unit)? = null, quiet: Boolean = false, onAnswer: (String) -> Unit) {
+        Log.i(TAG, "follow-up: asking ${LogText.shown(prompt, quiet)}")
+        pendingAsk = Ask(prompt, quiet, onAnswer)
+        reply(prompt, onProgress = onProgress, quiet = quiet)
     }
 
     /** A yes/no question. A mumbled answer is asked once more, then treated as no. */
@@ -1073,8 +1083,9 @@ class DriveService : Service() {
         onYes: () -> Unit,
         onNo: () -> Unit = { reply("Okay, cancelled.") },
         retried: Boolean = false,
+        quiet: Boolean = false,
     ) {
-        ask(prompt) { text ->
+        ask(prompt, quiet = quiet) { text ->
             when (YesNo.parse(text)) {
                 true -> onYes()
                 false -> onNo()
@@ -1090,9 +1101,11 @@ class DriveService : Service() {
         pendingAsk = null
         answerHandler = asked.onAnswer
         speaking = false
-        Log.i(TAG, "follow-up: listening for an answer to \"${asked.prompt}\"")
+        quietAnswer = asked.quiet
+        Log.i(TAG, "follow-up: listening for an answer to ${LogText.shown(asked.prompt, asked.quiet)}")
         cue.listening()
         publish("Listening...", DriveState.LISTENING)
+        main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, INTERACTION_TIMEOUT_MS)
         main.postDelayed({ if (!destroyed) startCapture() }, 150)
     }
@@ -1102,6 +1115,7 @@ class DriveService : Service() {
         speaking = false
         inChat = false
         pendingAsk = null
+        quietAnswer = false
         DriveBus.showChoices(null)
         DriveBus.choiceTap = null
         answerHandler = null
