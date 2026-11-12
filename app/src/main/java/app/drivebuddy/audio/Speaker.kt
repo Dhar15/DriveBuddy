@@ -15,7 +15,10 @@ import app.drivebuddy.common.LogText
 class Speaker(context: Context) : TextToSpeech.OnInitListener {
 
     private val main = Handler(Looper.getMainLooper())
-    private val tts = TextToSpeech(context.applicationContext, this)
+    private val appContext = context.applicationContext
+    private var tts = TextToSpeech(appContext, this)
+    private var afterRebuild: (() -> Unit)? = null
+    private var giveUp: (() -> Unit)? = null
     private var ready = false
     private var currentId: String? = null
     private var startCallback: (() -> Unit)? = null
@@ -26,6 +29,8 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) {
             Log.e("DriveBuddy", "TTS initialization failed: status=$status")
+            afterRebuild = null
+            giveUp?.let { giveUp = null; main.post(it) }
             return
         }
         val languageStatus = tts.setLanguage(Locale("en", "IN"))
@@ -91,13 +96,27 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
         })
 
         ready = true
+        afterRebuild?.let { retry -> afterRebuild = null; giveUp = null; main.post(retry) }
     }
 
     /** Speaks [text]. [onStart] fires when audio actually begins; [onDone] when it ends or fails. */
-    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit, onProgress: ((Int) -> Unit)? = null, quiet: Boolean = false) {
+    /** Speaks [text]. [onStart] fires when audio actually begins; [onDone] when it ends or fails. */
+    fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit, onProgress: ((Int) -> Unit)? = null, quiet: Boolean = false) =
+        attempt(text, onStart, onDone, onProgress, quiet, canRebuild = true)
+
+    private fun attempt(
+        text: String, onStart: () -> Unit, onDone: () -> Unit,
+        onProgress: ((Int) -> Unit)?, quiet: Boolean, canRebuild: Boolean,
+    ) {
         Log.i("DriveBuddy", "TTS requested: ${LogText.shown(text, quiet)}, ready=$ready")
 
         if (!ready) {
+            if (canRebuild) {
+                Log.i("DriveBuddy", "TTS: engine is still starting, will speak as soon as it is ready")
+                afterRebuild = { attempt(text, onStart, onDone, onProgress, quiet, canRebuild = false) }
+                giveUp = { onDone() }
+                return
+            }
             Log.e("DriveBuddy", "TTS unavailable; skipping speech")
             onDone()
             return
@@ -111,9 +130,26 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
         val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
         Log.i("DriveBuddy", "TTS speak result=$result, id=$id")
         if (result == TextToSpeech.ERROR) {
-            Log.e("DriveBuddy", "TTS speak() rejected utterance")
-            finish()
+            if (canRebuild) {
+                rebuildEngine(
+                    retry = { attempt(text, onStart, onDone, onProgress, quiet, canRebuild = false) },
+                    giveUp = { finish() },
+                )
+            } else {
+                Log.e("DriveBuddy", "TTS speak() rejected utterance again after restarting the engine")
+                finish()
+            }
         }
+    }
+
+    /** The engine connection went stale: reconnect, then run [retry]. If it won't start, run [giveUp]. */
+    private fun rebuildEngine(retry: () -> Unit, giveUp: () -> Unit) {
+        Log.w("DriveBuddy", "TTS: the speech engine stopped answering, reconnecting to it")
+        ready = false
+        afterRebuild = retry
+        this.giveUp = giveUp
+        try { tts.shutdown() } catch (e: Exception) { Log.w("DriveBuddy", "TTS: old engine would not shut down: ${e.javaClass.simpleName}") }
+        tts = TextToSpeech(appContext, this)
     }
 
     private fun finish() {
@@ -130,6 +166,8 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
 
     /** Cuts off speech immediately and runs the normal "done" path. */
     fun stop() {
+        afterRebuild = null
+        giveUp = null
         tts.stop()
         finish()
     }
