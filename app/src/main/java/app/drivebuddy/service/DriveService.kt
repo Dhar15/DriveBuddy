@@ -44,6 +44,7 @@ import app.drivebuddy.features.music.MusicHandler
 import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
 import app.drivebuddy.features.navigation.NavigationHandler
+import app.drivebuddy.features.commute.CommuteHandler
 import app.drivebuddy.features.nearby.NearbyHandler
 import app.drivebuddy.features.news.NewsHandler
 import app.drivebuddy.features.phone.PhoneActions
@@ -118,6 +119,8 @@ class DriveService : Service() {
 
     private lateinit var assistantVolume: AssistantVolume
 
+    private var nextStep: (() -> Unit)? = null // the next step of a multi-step request such as the commute
+
     // What feature handlers may ask of this service. Calls are qualified because the names match ours.
     private val conversation: Conversation = object : Conversation {
         override val context: Context get() = this@DriveService
@@ -142,6 +145,8 @@ class DriveService : Service() {
         override fun askYesNo(prompt: String, quiet: Boolean, onYes: () -> Unit) =
             this@DriveService.askYesNo(prompt, onYes = onYes, quiet = quiet)
         override fun speakLate(text: String) = this@DriveService.speakLate(text)
+        override fun continueWith(next: () -> Unit) { nextStep = next }
+        override fun holdMusicPaused() { this@DriveService.keepMusicPaused = true }
     }
     private val news by lazy { NewsHandler(conversation) }
     private val nearby by lazy { NearbyHandler(conversation) }
@@ -150,6 +155,7 @@ class DriveService : Service() {
     private val comms by lazy { CommunicationHandler(conversation, actions) }
     private val music by lazy { MusicHandler(conversation, actions, spotifyAuth, spotify) }
     private val navigation: NavigationHandler by lazy { NavigationHandler(conversation, actions) }
+    private val commute: CommuteHandler by lazy { CommuteHandler(conversation, weather, news, navigation, music) }
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -157,7 +163,7 @@ class DriveService : Service() {
         answerHandler = null
         capture.destroy()
         tracker.sttEngine = capture.engineName
-        if (inChat) {
+        if (inChat || nextStep != null) {
             Log.i(TAG, "chat: the driver went quiet, ending the conversation")
             tracker.command = "chat: ended on silence"
             finishInteraction()
@@ -242,6 +248,7 @@ class DriveService : Service() {
                 Log.i(TAG, "Talk pressed while speaking: interrupting")
                 interrupted = true // cancels any action waiting for the speech to finish
                 pendingAsk = null
+                nextStep = null
                 answerHandler = null
                 speaker.stop()     // finishes the old interaction, which frees us to start a new one
             } else {
@@ -321,6 +328,10 @@ class DriveService : Service() {
                 if (handler != null) {
                     answerHandler = null
                     Log.i(TAG, "follow-up answer: ${LogText.shown(text, quiet)}")
+                    if (nextStep != null && CommandParser.parse(text) is Command.Stop) {
+                        Log.i(TAG, "commute: the driver said stop, dropping the remaining steps")
+                        nextStep = null
+                    }
                     handler(text)
                 } else {
                     respond(CommandParser.parse(text))
@@ -333,7 +344,7 @@ class DriveService : Service() {
                 tracker.command = "error: $message"
                 Log.w(TAG, "recognition failed: $message (engine=${capture.engineName})")
                 val noInternet = message.contains("network") || message.contains("server")
-                if (inChat && !noInternet) {
+                if ((inChat || nextStep != null) && !noInternet) {
                     Log.i(TAG, "chat: the driver went quiet, ending the conversation")
                     tracker.command = "chat: ended on silence"
                     finishInteraction()
@@ -393,6 +404,7 @@ class DriveService : Service() {
                     )
                 )
             }
+            Command.Commute -> commute.start()
         }
     }
 
@@ -418,6 +430,8 @@ class DriveService : Service() {
             Log.i(TAG, "choice tapped but nothing is waiting for it: $token")
             return
         }
+        val keep = nextStep
+        nextStep = null
         Log.i(TAG, "choice tapped: $token (speaking=$speaking)")
         main.removeCallbacks(watchdog)
         pendingAsk = null
@@ -429,6 +443,7 @@ class DriveService : Service() {
         }
         main.postDelayed({
             if (destroyed) return@postDelayed
+            nextStep = keep
             busy = true // the old interaction has just finished; this tap starts a new one
             wake.stop()
             requestFocus()
@@ -624,6 +639,20 @@ class DriveService : Service() {
 
     private fun finishInteraction() {
         main.removeCallbacks(watchdog)
+        val next = nextStep
+        if (next != null && !destroyed) {
+            nextStep = null
+            Log.i(TAG, "commute: step finished, moving to the next")
+            speaking = false
+            inChat = false
+            pendingAsk = null
+            quietAnswer = false
+            answerHandler = null
+            DriveBus.showChoices(null)
+            DriveBus.choiceTap = null
+            main.postDelayed({ if (!destroyed) next() }, 300)
+            return
+        }
         speaking = false
         inChat = false
         pendingAsk = null
@@ -696,6 +725,7 @@ class DriveService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        nextStep = null
         wake.release()
         anchor.hide()
         assistantVolume.restore()

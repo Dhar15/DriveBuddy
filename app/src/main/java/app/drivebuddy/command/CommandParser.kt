@@ -55,6 +55,8 @@ sealed class Command {
     data class CancelAlarm(val target: AlarmTarget) : Command()
 
     object StopNavigation : Command()
+
+    object Commute : Command()
 }
 
 /** Rule-based fast lane: no model, no network. */
@@ -121,6 +123,10 @@ object CommandParser {
         "^(?:exit|stop|cancel|end|quit|turn off)(?: the| my)? (?:navigation|navigating|route|trip|directions|maps|google maps)$"
     )
 
+    private val commuteRule = Regex(
+        "^(?:(?:start|begin|run|let's|lets|let us|time to)(?: my| the)? )?commute(?: mode)?$"
+    )
+
     private val alarmWord = Regex("\\balarms?\\b")
     private val cancelVerb = Regex("^(?:cancel|delete|remove|turn off|switch off|disable|dismiss|clear|stop) (.+)$")
     private val everyAlarm = Regex("\\b(?:all|every|everything)\\b|\\balarms\\b")
@@ -167,6 +173,7 @@ object CommandParser {
             return Command.Navigate(it.groupValues[1].replace(article, "").trim())
         }
         if (stopNavigationRule.matches(core)) return Command.StopNavigation
+        if (commuteRule.matches(core)) return Command.Commute
         if (weatherRule.matches(core)) return Command.Weather
         if (timeRule.matches(core)) return Command.Time
         if (dateRule.matches(core)) return Command.Date

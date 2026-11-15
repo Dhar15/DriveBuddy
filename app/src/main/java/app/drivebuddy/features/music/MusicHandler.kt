@@ -120,7 +120,7 @@ class MusicHandler(
         }.start()
     }
 
-    private fun playLiked() {
+    fun playLiked() {
         c.publish("Asking Spotify...", DriveState.THINKING)
         Thread {
             c.pauseWatchdog()
@@ -139,7 +139,7 @@ class MusicHandler(
     }
 
     /** [name] null means "any of my playlists". */
-    private fun playPlaylist(name: String?) {
+    fun playPlaylist(name: String?) {
         c.publish("Asking Spotify...", DriveState.THINKING)
         Thread {
             c.pauseWatchdog()

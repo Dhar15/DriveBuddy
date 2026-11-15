@@ -18,8 +18,8 @@ class NewsHandler(private val c: Conversation) {
 
     private val seen by lazy { NewsSeen(c.context) }
 
-    fun handle(world: Boolean) {
-        Log.i(TAG, "news: asked (world=$world)")
+    fun handle(world: Boolean, brief: Boolean = false) {
+        Log.i(TAG, "news: asked (world=$world, brief=$brief)")
         c.pauseWatchdog()
         c.publish("Getting the news...", DriveState.THINKING)
         thread(name = "news") {
@@ -35,14 +35,14 @@ class NewsHandler(private val c: Conversation) {
                 when {
                     all.isEmpty() -> c.reply("I couldn't find any headlines.")
                     fresh.isEmpty() -> c.reply("There's nothing new since I last checked.")
-                    else -> offer(if (world) "the BBC" else "The Hindu", fresh, 0)
+                    else -> offer(if (world) "the BBC" else "The Hindu", fresh, 0, brief)
                 }
             }
         }
     }
 
     /** Shows up to five cards, reads them out, then waits for a number, "more" or "done". */
-    private fun offer(source: String, fresh: List<Headline>, start: Int) {
+    private fun offer(source: String, fresh: List<Headline>, start: Int, brief: Boolean = false) {
         val batch = fresh.drop(start).take(NewsText.BATCH)
         if (batch.isEmpty()) {
             DriveBus.showChoices(null)
@@ -62,6 +62,15 @@ class NewsHandler(private val c: Conversation) {
                 action = "Read story",
             ),
         )
+
+        if (brief) {
+            // Part of a longer routine such as the commute: read the batch out and move on, no questions.
+            val spoken = NewsText.speak(batch.map { it.title }, start == 0, source)
+            Log.i(TAG, "news: brief read-out, no follow-up")
+            c.reply(spoken, onProgress = c.slideAlong(spoken, batch.indices.map { "Number ${it + 1}." }))
+            return
+        }
+
         val tail = if (more) " Say a number to open one, more, or done." else " Say a number to open one, or done."
         val spoken = NewsText.speak(batch.map { it.title }, start == 0, source) + tail
         c.ask(spoken, onProgress = c.slideAlong(spoken, batch.indices.map { "Number ${it + 1}." })) { raw ->

@@ -51,4 +51,10 @@ interface Conversation {
 
     /** Speaks a message that arrives after the interaction has finished (a failure we only learned about later). */
     fun speakLate(text: String)
+
+    /** Runs [next] when the current step has finished (spoken and answered), instead of ending the interaction. */
+    fun continueWith(next: () -> Unit)
+
+    /** Don't resume the music that was playing before the interaction; something new is about to play. */
+    fun holdMusicPaused()
 }
