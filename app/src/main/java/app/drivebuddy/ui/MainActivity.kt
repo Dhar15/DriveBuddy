@@ -34,7 +34,9 @@ import app.drivebuddy.features.navigation.Journeys
 import app.drivebuddy.common.LatencyLog
 import app.drivebuddy.features.navigation.SavedPlaces
 import app.drivebuddy.service.DriveService
+import app.drivebuddy.features.weather.WeatherText
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** Plain-views screen for milestone 1: start/stop the drive service and test a "Talk" interaction. */
 class MainActivity : Activity() {
@@ -286,13 +288,28 @@ class MainActivity : Activity() {
     /** Draws the "pick one" card (nearby places), or hides it when there is nothing to pick. */
     /** Draws the full-screen "pick one" layer (nearby places) over the orb, or fades it away when there is none. */
     private fun showChoices(card: ChoiceCard?) {
-        choicesBox.removeAllViews()
-        DriveBus.pageTo = null
-        if (card == null || card.rows.isEmpty()) {
-            choicesBox.visibility = View.GONE
+        choicesBox.animate().cancel()
+        if (card == null || (card.rows.isEmpty() && card.weather == null)) {
+            DriveBus.pageTo = null
+            if (choicesBox.visibility == View.VISIBLE) {
+                // Fade out, and only then empty it, so the content doesn't vanish before the fade.
+                choicesBox.animate().alpha(0f).setDuration(350).withEndAction {
+                    choicesBox.visibility = View.GONE
+                    choicesBox.removeAllViews()
+                    choicesBox.setOnClickListener(null)
+                    choicesBox.alpha = 1f
+                }.start()
+            } else {
+                choicesBox.removeAllViews()
+            }
             return
         }
+        choicesBox.alpha = 1f
+        choicesBox.removeAllViews()
+        choicesBox.setOnClickListener(null)
+        DriveBus.pageTo = null
         Log.i(TAG, "choices: showing ${card.rows.size} row(s) for \"${card.title}\"")
+        if (card.weather != null) { showWeather(card); return }
         if (card.paged) { showPaged(card); return }
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
@@ -601,6 +618,106 @@ class MainActivity : Activity() {
         })
 
         choicesBox.addView(root)
+    }
+
+    /** The weather card: place and day, big temperature, condition, and the next hours with three views. */
+    private fun showWeather(card: ChoiceCard) {
+        val w = card.weather ?: return
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun pill(fill: Int, stroke: Int?) = GradientDrawable().apply {
+            cornerRadius = dp(22).toFloat(); setColor(fill)
+            if (stroke != null) setStroke(dp(1), stroke)
+        }
+        choicesBox.visibility = View.VISIBLE
+        choicesBox.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xF70B0A12.toInt(), 0xF40B0A12.toInt(), 0xEB0B0A12.toInt())
+        )
+        choicesBox.isClickable = true
+        choicesBox.setOnClickListener {
+            Log.i(TAG, "weather: closed by tap")
+            DriveBus.showChoices(null)
+        }
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(28), dp(72), dp(28), dp(28))
+        }
+        column.addView(TextView(this).apply {
+            text = w.title.uppercase()
+            setTextColor(0xFFF2A93B.toInt()); textSize = 12f; letterSpacing = 0.18f
+        })
+
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        top.setPadding(0, dp(18), 0, 0)
+        top.addView(WeatherIconView(this, w.code, w.isDay), LinearLayout.LayoutParams(dp(84), dp(84)))
+        top.addView(TextView(this).apply {
+            text = "${w.tempC}°"; textSize = 64f; setTextColor(0xFFF4F1FA.toInt())
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setPadding(dp(16), 0, 0, 0)
+        })
+        column.addView(top)
+        column.addView(TextView(this).apply {
+            text = w.condition; textSize = 22f; setTextColor(0xFFF4F1FA.toInt())
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setPadding(0, dp(18), 0, 0)
+        })
+        column.addView(TextView(this).apply {
+            text = w.detail; textSize = 14f; setTextColor(0xFF9C95B5.toInt())
+            setPadding(0, dp(6), 0, dp(24))
+        })
+
+        // Three views of the same hours: temperature, rain chance, wind.
+        val hoursRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val tabs = listOf("Temp", "Rain", "Wind")
+        val tabViews = mutableListOf<TextView>()
+        fun fill(tab: Int) {
+            tabViews.forEachIndexed { i, tv ->
+                tv.background = pill(if (i == tab) 0x337B5CF0 else Color.TRANSPARENT, if (i == tab) 0xFF372E55.toInt() else null)
+                tv.setTextColor(if (i == tab) 0xFFF4F1FA.toInt() else 0xFF9C95B5.toInt())
+            }
+            hoursRow.removeAllViews()
+            w.hours.forEach { h ->
+                val value = when (tab) {
+                    0 -> "${h.tempC.roundToInt()}°"
+                    1 -> "${h.rainPercent ?: 0}%"
+                    else -> h.windKmh?.let { "${it.roundToInt()} km/h" } ?: "–"
+                }
+                val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+                col.addView(TextView(this).apply {
+                    text = WeatherText.hourLabel(h.hour); textSize = 14f; setTextColor(0xFF9C95B5.toInt())
+                })
+                col.addView(WeatherIconView(this, h.code, h.hour in 6..18),
+                    LinearLayout.LayoutParams(dp(36), dp(36)).apply { topMargin = dp(10); bottomMargin = dp(10) })
+                col.addView(TextView(this).apply {
+                    text = value; textSize = if (tab == 2) 13f else 17f; setTextColor(0xFFF4F1FA.toInt())
+                })
+                hoursRow.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabs.forEachIndexed { i, label ->
+            val tv = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                maxLines = 1
+                setPadding(dp(20), dp(9), dp(20), dp(9))
+                setOnClickListener { Log.d(TAG, "weather: tab $label"); fill(i) }
+            }
+            tabViews += tv
+            tabRow.addView(tv, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { rightMargin = dp(8) })
+        }
+        column.addView(tabRow)
+        column.addView(View(this), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(22)))
+        fill(0)
+        column.addView(hoursRow)
+
+        column.addView(View(this), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        column.addView(TextView(this).apply {
+            text = "Open-Meteo  ·  tap anywhere to close"; textSize = 12f; setTextColor(0xFF6E678A.toInt())
+        })
+        choicesBox.addView(column)
     }
 
     private fun showLastTrip() {

@@ -19,6 +19,17 @@ data class DriveUiState(
 /** One line of the "pick one" card on the home screen. */
 data class ChoiceRow(val label: String, val detail: String, val body: String = "")
 
+/** What the weather card draws. */
+data class WeatherCard(
+    val title: String,                 // "Sunday · Bengaluru, Karnataka"
+    val tempC: Int,
+    val condition: String,
+    val detail: String,
+    val isDay: Boolean,
+    val code: Int,
+    val hours: List<app.drivebuddy.features.weather.HourPoint>,
+)
+
 /** The "pick one" card: a title, up to three rows and a hint line. */
 data class ChoiceCard(
     val title: String,
@@ -28,6 +39,7 @@ data class ChoiceCard(
     val paged: Boolean = false,
     val action: String = "Navigate",
     val compact: Boolean = false,
+    val weather: WeatherCard? = null,
     )
 
 /** Single place the service writes to and the screen listens to. */

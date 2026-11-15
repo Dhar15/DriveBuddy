@@ -4,6 +4,15 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** What the weather service told us, already in plain numbers (Celsius). */
+/** One hour of the forecast, for the weather card. */
+data class HourPoint(
+    val hour: Int,            // 0-23, local time
+    val tempC: Double,
+    val rainPercent: Int?,
+    val code: Int,
+    val windKmh: Double?,
+)
+
 data class WeatherNow(
     val tempC: Double,
     val feelsC: Double,
@@ -11,6 +20,8 @@ data class WeatherNow(
     val highC: Double,
     val lowC: Double,
     val rainPercent: Int?,
+    val isDay: Boolean = true,
+    val hours: List<HourPoint> = emptyList(),
 )
 
 /** Turns [WeatherNow] into one short spoken answer. Pure logic, no Android. */
@@ -41,6 +52,16 @@ object WeatherText {
         96, 99 -> "Thunderstorms with hail"
         else -> null
     }
+
+    /** 17 -> "5 pm", 0 -> "12 am". */
+    fun hourLabel(hour: Int): String {
+        val h = hour % 12
+        return "${if (h == 0) 12 else h} ${if (hour < 12) "am" else "pm"}"
+    }
+
+    /** "High 27° · Low 18° · Rain 10%" for the card. */
+    fun detail(w: WeatherNow): String =
+        "High ${w.highC.roundToInt()}° · Low ${w.lowC.roundToInt()}°" + (w.rainPercent?.let { " · Rain $it%" } ?: "")
 
     private fun say(degrees: Double): String {
         val n = degrees.roundToInt()
