@@ -424,11 +424,18 @@ class MainActivity : Activity() {
         }
         val header = TextView(this).apply {
             setTextColor(0xFFF2A93B.toInt()); textSize = 12f; letterSpacing = 0.18f
-            setPadding(dp(28), 0, dp(28), dp(14))
+            setPadding(dp(28), 0, dp(28), dp(0))
         }
         val dots = TextView(this).apply {
             gravity = Gravity.CENTER; textSize = 14f; letterSpacing = 0.3f
             setTextColor(0xFFF2A93B.toInt()); setPadding(0, dp(14), 0, dp(10))
+        }
+        val notice = TextView(this).apply {
+            text = "Auto slide turned off"
+            textSize = 12f; letterSpacing = 0.08f
+            setTextColor(0xFF9C95B5.toInt())
+            setPadding(dp(28), 0, dp(28), dp(10))
+            alpha = 0f
         }
         fun select(pos: Int) {
             header.text = "${card.title.uppercase()}  ·  ${pos + 1} OF ${card.rows.size}"
@@ -555,6 +562,10 @@ class MainActivity : Activity() {
                     if (state == ViewPager2.SCROLL_STATE_DRAGGING && follow) {
                         follow = false
                         Log.d(TAG, "choices: you took over, auto-slide off")
+                        notice.animate().cancel()
+                        notice.animate().alpha(1f).setDuration(150).withEndAction {
+                            notice.animate().alpha(0f).setStartDelay(1800).setDuration(400).start()
+                        }.start()
                     }
                 }
             })
@@ -566,6 +577,7 @@ class MainActivity : Activity() {
         select(0)
 
         root.addView(header)
+        root.addView(notice)
         root.addView(pager, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(dots)
