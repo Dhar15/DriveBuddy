@@ -370,6 +370,7 @@ class DriveService : Service() {
             is Command.AlarmInfo -> alarms.info(command.showList)
             is Command.CancelAlarm -> alarms.cancel()
             is Command.Navigate -> navigation.navigate(command.destination)
+            is Command.StopNavigation -> navigation.stop()
             is Command.Flashlight -> reply(PhoneControls.flashlight(this, command.on))
             is Command.Dnd -> reply(PhoneControls.dnd(this, command.on))
             is Command.OpenApp -> reply(PhoneControls.openApp(this, command.name))

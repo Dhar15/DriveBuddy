@@ -6,6 +6,7 @@ import app.drivebuddy.features.phone.PhoneActions
 import app.drivebuddy.service.Conversation
 import app.drivebuddy.ui.DriveState
 import kotlin.concurrent.thread
+import app.drivebuddy.features.music.MediaListener
 
 /** "Navigate to work": says how long the drive takes (when it can find out), then opens maps. */
 class NavigationHandler(private val c: Conversation, private val actions: PhoneActions) {
@@ -72,6 +73,20 @@ class NavigationHandler(private val c: Conversation, private val actions: PhoneA
                 val seconds = EtaClient.driveSeconds(location.latitude, location.longitude, query)
                 c.post { if (!c.destroyed) then(seconds?.let { EtaText.spoken(it) }) }
             }
+        }
+    }
+
+    fun stop() {
+        Log.i(TAG, "navigation: stop asked")
+        when (MediaListener.exitNavigation()) {
+            NavExitResult.PRESSED -> c.reply("Okay, stopping navigation.")
+            NavExitResult.NO_NOTIFICATION -> c.reply("I don't see a navigation running.")
+            NavExitResult.NO_BUTTON ->
+                c.reply("Maps didn't give me an exit button. I'll open it so you can end the trip.") {
+                    actions.openApp("com.google.android.apps.maps")
+                }
+            NavExitResult.NOT_CONNECTED ->
+                c.reply("I need notification access to do that. Open Permissions in DriveBuddy and turn it on.")
         }
     }
 }
