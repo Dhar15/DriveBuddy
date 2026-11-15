@@ -24,6 +24,7 @@ import app.drivebuddy.audio.Cue
 import app.drivebuddy.audio.Speaker
 import app.drivebuddy.audio.SpeechCapture
 import app.drivebuddy.audio.WakeWord
+import app.drivebuddy.audio.AssistantVolume
 import app.drivebuddy.command.Command
 import app.drivebuddy.command.CommandParser
 import app.drivebuddy.command.MediaAction
@@ -116,6 +117,8 @@ class DriveService : Service() {
     private lateinit var llm: LlmClient
     private lateinit var quota: ChatQuota
 
+    private lateinit var assistantVolume: AssistantVolume
+
     // What feature handlers may ask of this service. Calls are qualified because the names match ours.
     private val conversation = object : Conversation {
         override val context: Context get() = this@DriveService
@@ -177,6 +180,7 @@ class DriveService : Service() {
         cue = Cue()
         ackVoice = AckVoice(this)
         speaker = Speaker(this)
+        assistantVolume = AssistantVolume(this)
         capture = SpeechCapture(this)
         wake = WakeWord(this, onProblem = { why ->
             Log.w(TAG, "wake word problem: $why")
@@ -359,7 +363,7 @@ class DriveService : Service() {
                 else -> reply("I don't see a music app to control.")
             }
             is Command.Play -> music.play(command)
-            is Command.Volume -> music.volume(command)
+            is Command.Volume -> { assistantVolume.restore(); music.volume(command) }
             is Command.Call -> comms.call(command.name)
             is Command.Sms -> comms.sms(command.name, command.body)
             is Command.AlarmInfo -> alarms.info(command.showList)
@@ -665,6 +669,7 @@ class DriveService : Service() {
     }
 
     private fun requestFocus() {
+        assistantVolume.raise()
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -677,6 +682,7 @@ class DriveService : Service() {
     }
 
     private fun abandonFocus() {
+        assistantVolume.restore()
         focusRequest?.let { audio.abandonAudioFocusRequest(it) }
         focusRequest = null
     }
@@ -718,6 +724,7 @@ class DriveService : Service() {
         destroyed = true
         wake.release()
         anchor.hide()
+        assistantVolume.restore()
         abandonFocus()
         capture.destroy()
         speaker.shutdown()
