@@ -20,11 +20,11 @@ import android.os.Looper
 import android.util.Log
 import app.drivebuddy.R
 import app.drivebuddy.audio.AckVoice
+import app.drivebuddy.audio.AssistantVolume
 import app.drivebuddy.audio.Cue
 import app.drivebuddy.audio.Speaker
 import app.drivebuddy.audio.SpeechCapture
 import app.drivebuddy.audio.WakeWord
-import app.drivebuddy.audio.AssistantVolume
 import app.drivebuddy.command.Command
 import app.drivebuddy.command.CommandParser
 import app.drivebuddy.command.MediaAction
@@ -43,8 +43,7 @@ import app.drivebuddy.features.communication.CommunicationHandler
 import app.drivebuddy.features.music.MusicHandler
 import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
-import app.drivebuddy.features.navigation.Journeys
-import app.drivebuddy.features.navigation.SavedPlaces
+import app.drivebuddy.features.navigation.NavigationHandler
 import app.drivebuddy.features.nearby.NearbyHandler
 import app.drivebuddy.features.news.NewsHandler
 import app.drivebuddy.features.phone.PhoneActions
@@ -120,7 +119,7 @@ class DriveService : Service() {
     private lateinit var assistantVolume: AssistantVolume
 
     // What feature handlers may ask of this service. Calls are qualified because the names match ours.
-    private val conversation = object : Conversation {
+    private val conversation: Conversation = object : Conversation {
         override val context: Context get() = this@DriveService
         override val destroyed: Boolean get() = this@DriveService.destroyed
         override fun reply(text: String, quiet: Boolean, onProgress: ((Int) -> Unit)?, afterSpeaking: (() -> Unit)?) =
@@ -138,7 +137,8 @@ class DriveService : Service() {
         }
         override fun slideAlong(text: String, markers: List<String>) = this@DriveService.slideAlong(text, markers)
         override fun locationReady(feature: String) = this@DriveService.locationReady(feature)
-        override fun startNavigation(name: String, query: String) = this@DriveService.startNearbyNavigation(name, query)
+        override fun startNavigation(name: String, query: String): Boolean = navigation.start(name, query)
+        override fun goTo(name: String, query: String, lead: String): Unit = navigation.go(name, query, lead)
         override fun askYesNo(prompt: String, quiet: Boolean, onYes: () -> Unit) =
             this@DriveService.askYesNo(prompt, onYes = onYes, quiet = quiet)
         override fun speakLate(text: String) = this@DriveService.speakLate(text)
@@ -149,6 +149,7 @@ class DriveService : Service() {
     private val alarms by lazy { AlarmHandler(conversation) }
     private val comms by lazy { CommunicationHandler(conversation, actions) }
     private val music by lazy { MusicHandler(conversation, actions, spotifyAuth, spotify) }
+    private val navigation: NavigationHandler by lazy { NavigationHandler(conversation, actions) }
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -368,7 +369,7 @@ class DriveService : Service() {
             is Command.Sms -> comms.sms(command.name, command.body)
             is Command.AlarmInfo -> alarms.info(command.showList)
             is Command.CancelAlarm -> alarms.cancel()
-            is Command.Navigate -> handleNavigate(command.destination)
+            is Command.Navigate -> navigation.navigate(command.destination)
             is Command.Flashlight -> reply(PhoneControls.flashlight(this, command.on))
             is Command.Dnd -> reply(PhoneControls.dnd(this, command.on))
             is Command.OpenApp -> reply(PhoneControls.openApp(this, command.name))
@@ -556,34 +557,6 @@ class DriveService : Service() {
                 DriveBus.slideTo(target)
             }
         }
-    }
-
-    private fun handleNavigate(spoken: String) {
-        if (!actions.canOpenOtherApps()) {
-            reply("I need permission to display over other apps before I can open maps.")
-            return
-        }
-        val query = SavedPlaces.resolve(this, spoken)
-        reply("Navigating to $spoken. Tap Talk to cancel.") {
-            if (actions.navigate(query)) {
-                Log.i(TAG, "navigation started: \"$spoken\"")
-                Journeys.record(this, spoken, query)
-            } else {
-                Log.w(TAG, "navigation to \"$spoken\" could not be started")
-            }
-        }
-    }
-
-    /** Opens Maps for a picked nearby place and records it as the last trip. */
-    private fun startNearbyNavigation(name: String, query: String): Boolean {
-        val started = actions.navigate(query)
-        if (started) {
-            Log.i(TAG, "navigation started: nearby pick")
-            Journeys.record(this, name, query)
-        } else {
-            Log.w(TAG, "nearby navigation could not be started")
-        }
-        return started
     }
 
     private fun reply(

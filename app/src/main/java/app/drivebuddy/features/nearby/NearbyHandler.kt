@@ -92,7 +92,7 @@ class NearbyHandler(private val c: Conversation) {
                         go()
                         c.finish()
                     } else {
-                        c.reply("Starting navigation to $name.") { go() }
+                        c.goTo(name, "${r.place.latitude},${r.place.longitude}", "Starting navigation to")
                     }
                 }
                 PlaceChoice.More -> offer(what, ranked, start + batch.size)

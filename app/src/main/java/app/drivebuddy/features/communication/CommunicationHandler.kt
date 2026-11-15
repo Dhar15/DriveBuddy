@@ -18,7 +18,7 @@ class CommunicationHandler(private val c: Conversation, private val actions: Pho
         when (val match = NameMatcher.match(spoken, actions.loadContacts())) {
             is MatchResult.Single -> {
                 val who = match.candidate
-                c.reply("Calling ${who.name}. Tap Talk to cancel.") {
+                c.reply("Calling ${who.name}.") {
                     if (!actions.placeCall(who.number)) Log.w(TAG, "call to ${who.name} could not be placed")
                 }
             }

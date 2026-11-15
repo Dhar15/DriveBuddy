@@ -43,6 +43,9 @@ interface Conversation {
     /** Opens maps for [query] and records it as the last trip. [name] is only for the journey record. */
     fun startNavigation(name: String, query: String): Boolean
 
+    /** Announces the trip with its ETA, then opens maps. */
+    fun goTo(name: String, query: String, lead: String)
+
     /** A yes/no question. A mumbled answer is asked once more, then treated as no. */
     fun askYesNo(prompt: String, quiet: Boolean = false, onYes: () -> Unit)
 
