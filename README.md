@@ -438,12 +438,10 @@ Next, roughly in order:
 1. **Multi-action commands:** "Take me home and play my driving playlist".
 2. **Timers and reminders:** check and cancel by voice. Alarm checking is done; alarm cancelling is blocked by the Clock app (see [Alarms: what Android allows](#alarms-what-android-allows)).
 3. **Spotify extras:** albums, "play that again", "not that one".
-4. **Stop navigation** by voice (best effort).
-5. **Recogniser hint phrases** built from your artists, playlists and contacts.
-6. **Traffic, ETA and places along the route** with minimal detour (Google Routes API; free allowance and quota cap to be checked first).
-7. **Housekeeping:** shorter spoken place list and a tidier nearby-search label.
-8. **News next steps:** "tell me more about story two" (short summary through the chat model), and mixing several feeds into one list.
-9. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
+4. **Recogniser hint phrases** built from your artists, playlists and contacts.
+5. **Housekeeping:** shorter spoken place list and a tidier nearby-search label.
+6. **News next steps:** "tell me more about story two" (short summary through the chat model), and mixing several feeds into one list.
+7. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
 
 ---
 
