@@ -30,6 +30,14 @@ data class WeatherCard(
     val hours: List<app.drivebuddy.features.weather.HourPoint>,
 )
 
+/** What the word and GK cards draw: a small label, an optional tag, a big headline, and labelled paragraphs. */
+data class LearningCard(
+    val kicker: String,                       // "Word of the day"
+    val tag: String,                          // "history" for GK, blank for the word
+    val headline: String,                     // the word, or the whole fact
+    val sections: List<Pair<String, String>>, // "Meaning" to ..., "Example" to ...
+)
+
 /** The "pick one" card: a title, up to three rows and a hint line. */
 data class ChoiceCard(
     val title: String,
@@ -40,6 +48,7 @@ data class ChoiceCard(
     val action: String = "Navigate",
     val compact: Boolean = false,
     val weather: WeatherCard? = null,
+    val learning: LearningCard? = null,
     )
 
 /** Single place the service writes to and the screen listens to. */

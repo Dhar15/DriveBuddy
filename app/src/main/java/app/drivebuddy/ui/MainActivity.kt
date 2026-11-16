@@ -289,7 +289,7 @@ class MainActivity : Activity() {
     /** Draws the full-screen "pick one" layer (nearby places) over the orb, or fades it away when there is none. */
     private fun showChoices(card: ChoiceCard?) {
         choicesBox.animate().cancel()
-        if (card == null || (card.rows.isEmpty() && card.weather == null)) {
+        if (card == null || (card.rows.isEmpty() && card.weather == null && card.learning == null)) {
             DriveBus.pageTo = null
             if (choicesBox.visibility == View.VISIBLE) {
                 // Fade out, and only then empty it, so the content doesn't vanish before the fade.
@@ -310,6 +310,7 @@ class MainActivity : Activity() {
         DriveBus.pageTo = null
         Log.i(TAG, "choices: showing ${card.rows.size} row(s) for \"${card.title}\"")
         if (card.weather != null) { showWeather(card); return }
+        if (card.learning != null) { showLearning(card); return }
         if (card.paged) { showPaged(card); return }
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
@@ -716,6 +717,76 @@ class MainActivity : Activity() {
         column.addView(View(this), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         column.addView(TextView(this).apply {
             text = "Open-Meteo  ·  tap anywhere to close"; textSize = 12f; setTextColor(0xFF6E678A.toInt())
+        })
+        choicesBox.addView(column)
+    }
+
+    /** The word and GK cards: a small label, an optional topic tag, one big line, and labelled paragraphs. */
+    private fun showLearning(card: ChoiceCard) {
+        val l = card.learning ?: return
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        val close = View.OnClickListener {
+            Log.i(TAG, "learning: closed by tap")
+            DriveBus.showChoices(null)
+        }
+        choicesBox.visibility = View.VISIBLE
+        choicesBox.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xF70B0A12.toInt(), 0xF40B0A12.toInt(), 0xEB0B0A12.toInt())
+        )
+        choicesBox.isClickable = true
+        choicesBox.setOnClickListener(close)
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(28), dp(72), dp(28), dp(28))
+        }
+        column.addView(TextView(this).apply {
+            text = l.kicker.uppercase()
+            setTextColor(0xFFF2A93B.toInt()); textSize = 12f; letterSpacing = 0.18f
+        })
+        if (l.tag.isNotBlank()) column.addView(TextView(this).apply {
+            text = l.tag.uppercase(); textSize = 11f; letterSpacing = 0.14f
+            setTextColor(0xFF9C95B5.toInt())
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat(); setStroke(dp(1), 0xFF372E55.toInt())
+            }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(14) })
+
+        // A single word is set big; a long fact steps down so it still fits.
+        val size = when {
+            l.headline.length <= 40 -> 40f
+            l.headline.length <= 120 -> 28f
+            l.headline.length <= 220 -> 22f
+            else -> 19f
+        }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(TextView(this).apply {
+            text = l.headline; textSize = size; setTextColor(0xFFF4F1FA.toInt())
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setLineSpacing(0f, 1.1f)
+        })
+        l.sections.forEach { (label, text) ->
+            body.addView(TextView(this).apply {
+                this.text = label.uppercase(); textSize = 12f; letterSpacing = 0.14f
+                setTextColor(0xFF6E678A.toInt()); setPadding(0, dp(28), 0, 0)
+            })
+            body.addView(TextView(this).apply {
+                this.text = text; textSize = 20f; setTextColor(0xFFD6D3E3.toInt())
+                setLineSpacing(0f, 1.15f); setPadding(0, dp(6), 0, 0)
+            })
+        }
+        column.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            setOnClickListener(close) // a scroll view would otherwise swallow the tap
+            addView(body)
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(24) })
+
+        column.addView(TextView(this).apply {
+            text = "Tap anywhere to close"; textSize = 12f; setTextColor(0xFF6E678A.toInt())
         })
         choicesBox.addView(column)
     }

@@ -4,6 +4,8 @@ import android.util.Log
 import app.drivebuddy.service.Conversation
 import app.drivebuddy.ui.DriveState
 import kotlin.concurrent.thread
+import app.drivebuddy.ui.ChoiceCard
+import app.drivebuddy.ui.LearningCard
 
 /** The word and the GK fact of the day, read out. Used as steps of the commute. */
 class LearningHandler(private val c: Conversation) {
@@ -19,7 +21,19 @@ class LearningHandler(private val c: Conversation) {
             c.post {
                 if (c.destroyed) return@post
                 if (word == null) c.reply("I couldn't get the word of the day.")
-                else c.reply(LearningText.word(word.word, word.meaning, word.example))
+                else {
+                    c.showCards(ChoiceCard(
+                        title = "Word of the day", rows = emptyList(), hint = "", hasMore = false,
+                        learning = LearningCard(
+                            kicker = "Word of the day", tag = "", headline = word.word.trim(),
+                            sections = listOfNotNull(
+                                "Meaning" to word.meaning.trim(),
+                                word.example.takeIf { it.isNotBlank() }?.let { "Example" to it.trim() },
+                            ),
+                        ),
+                    ))
+                    c.reply(LearningText.word(word.word, word.meaning, word.example))
+                }
             }
         }
     }
@@ -33,7 +47,16 @@ class LearningHandler(private val c: Conversation) {
             c.post {
                 if (c.destroyed) return@post
                 if (fact == null) c.reply("I couldn't get the G K of the day.")
-                else c.reply(LearningText.gk(fact.category, fact.fact))
+                else {
+                    c.showCards(ChoiceCard(
+                        title = "GK of the day", rows = emptyList(), hint = "", hasMore = false,
+                        learning = LearningCard(
+                            kicker = "GK of the day", tag = fact.category.trim(),
+                            headline = fact.fact.trim(), sections = emptyList(),
+                        ),
+                    ))
+                    c.reply(LearningText.gk(fact.category, fact.fact))
+                }
             }
         }
     }
