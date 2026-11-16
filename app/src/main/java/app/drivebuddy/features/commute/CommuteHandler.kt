@@ -9,6 +9,7 @@ import app.drivebuddy.features.navigation.NavigationHandler
 import app.drivebuddy.features.navigation.SavedPlaces
 import app.drivebuddy.features.news.NewsHandler
 import app.drivebuddy.features.weather.WeatherHandler
+import app.drivebuddy.features.learning.LearningHandler
 import app.drivebuddy.service.Conversation
 import app.drivebuddy.ui.DriveState
 import kotlin.concurrent.thread
@@ -18,6 +19,7 @@ class CommuteHandler(
     private val c: Conversation,
     private val weather: WeatherHandler,
     private val news: NewsHandler,
+    private val learning: LearningHandler,
     private val navigation: NavigationHandler,
     private val music: MusicHandler,
 ) {
@@ -31,9 +33,11 @@ class CommuteHandler(
     private val quota by lazy { EtaQuota(c.context) }
 
     private val steps: List<Pair<String, () -> Unit>> = listOf(
-        "welcome" to { c.reply("Welcome back. Initiating your commute.") },
+        "welcome" to { c.reply("Welcome back. Starting your commute.") },
         "weather" to { weather.handle() },
         "news" to { news.handle(world = false, brief = true) },
+        "word" to { learning.word() },
+        "gk" to { learning.gk() },
         "navigation" to { navigationStep() },
         "music" to { musicStep() },
     )
