@@ -855,8 +855,12 @@ class MainActivity : Activity() {
         // 2. Start the drive session by itself, once per app process.
         if (!autoStarted) {
             autoStarted = true
-            Log.i(TAG, "setup: auto-starting drive session")
-            startSession()
+            if (DriveBus.current.state == DriveState.OFF) {
+                Log.i(TAG, "setup: auto-starting drive session")
+                startSession()
+            } else {
+                Log.i(TAG, "setup: drive session already running (${DriveBus.current.state}), not restarting")
+            }
         }
         // 3. Special settings screens. Each one opens automatically a single time.
         val overlay = Settings.canDrawOverlays(this)

@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 import app.drivebuddy.ui.ChoiceCard
 import app.drivebuddy.ui.WeatherCard
+import app.drivebuddy.ui.DriveState
 
 /** "What's the weather": finds the location, fetches the forecast, reads it out. */
 class WeatherHandler(private val c: Conversation) {
@@ -21,7 +22,7 @@ class WeatherHandler(private val c: Conversation) {
         Log.i(TAG, "weather: asked")
         if (!c.locationReady("weather")) return
         c.pauseWatchdog() // location + network can outlast the watchdog
-        c.publish("Checking the weather...")
+        c.publish("Checking the weather...", DriveState.THINKING)
         LocationHelper.current(c.context) { location ->
             if (location == null) {
                 c.reply("I couldn't find your location.")

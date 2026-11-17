@@ -13,7 +13,7 @@ data class WordOfDay(val word: String, val meaning: String, val example: String)
 object WordOfDayClient {
     private const val TAG = "DriveBuddy"
 
-    fun fetch(): WordOfDay? {
+    fun fetch(readTimeoutMs: Int = 10_000): WordOfDay? {
         val base = BuildConfig.WORD_API_URL
         if (base.isBlank()) {
             Log.w(TAG, "word: WORD_API_URL is not set in local.properties")
@@ -28,7 +28,7 @@ object WordOfDayClient {
         }
         return try {
             conn.connectTimeout = 6_000
-            conn.readTimeout = 10_000 // Apps Script can be slow on a cold start
+            conn.readTimeout = readTimeoutMs    // Apps Script can be slow on a cold start
             val code = conn.responseCode
             val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -42,7 +42,7 @@ object WordOfDayClient {
             val w = json.getJSONObject("word")
             WordOfDay(w.getString("word"), w.getString("meaning"), w.optString("example", ""))
         } catch (e: Exception) {
-            Log.w(TAG, "word: failed: ${e.javaClass.simpleName}: ${e.message}")
+            Log.w(TAG, "word: failed after ${SystemClock.elapsedRealtime() - started}ms: ${e.javaClass.simpleName}: ${e.message}")
             null
         } finally {
             conn.disconnect()
