@@ -280,6 +280,7 @@ Both come from the sources of the owner's Sprint app: a Google Apps Script endpo
 
 ### Storage
 Only small things, all on the phone: encrypted Spotify tokens, saved places (JSON, with optional exact points), the last ten trips (JSON), the links of news articles already read out (for 24 hours), the day's cached word and GK, daily counters (chat, drive-time and autocomplete lookups) and a rolling latency log. Reminders live in Calendar and notes in Keep; DriveBuddy keeps no memory store of its own on purpose.
+
 ---
 
 ## Data, privacy and security
