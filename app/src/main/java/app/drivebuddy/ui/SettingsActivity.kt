@@ -34,6 +34,8 @@ class SettingsActivity : Activity() {
         root.addView(row("Places", "Home, work and other saved places", PlacesActivity::class.java))
         root.addView(row("Permissions", "Microphone, music, Do Not Disturb and more", SetupActivity::class.java))
 
+        root.addView(row("Logs", "What happened and when, with filters and sharing", LogActivity::class.java))
+
         root.setOnApplyWindowInsetsListener { v, insets ->
             v.setPadding(pad, insets.systemWindowInsetTop + pad, pad, insets.systemWindowInsetBottom + pad)
             insets
