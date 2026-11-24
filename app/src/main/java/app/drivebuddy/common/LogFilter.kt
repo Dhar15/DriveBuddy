@@ -1,5 +1,9 @@
 package app.drivebuddy.common
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
 /** One parsed logcat line. [isBreak] rows are separators (new session / new interaction). */
 data class LogLine(
     val raw: String,
@@ -20,6 +24,7 @@ data class LogQuery(
     val appOnly: Boolean = true,
     val text: String = "",
     val newestFirst: Boolean = false,
+    val windowMs: Long? = null, // null = all time; otherwise only lines from the last windowMs
 )
 
 data class LogResult(val rows: List<LogLine>, val total: Int)
@@ -40,12 +45,20 @@ object LogFilter {
     private val APP_TAGS = setOf("DriveBuddy", "AndroidRuntime") // AndroidRuntime = crash stack traces
 
     /** Filters, adds a divider before each interaction, keeps the newest [maxRows], then sorts. */
-    fun apply(lines: List<LogLine>, q: LogQuery, maxRows: Int = 5000): LogResult {
-        val needle = q.text.trim().lowercase()
+    fun apply(lines: List<LogLine>, q: LogQuery, maxRows: Int = 5000, nowMs: Long = System.currentTimeMillis()): LogResult {        val needle = q.text.trim().lowercase()
         val minIdx = LEVELS.indexOf(q.minLevel)
+        // Log lines carry "MM-dd HH:mm:ss.SSS" (no year), which compares correctly as text.
+        val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+        val nowStr = fmt.format(Date(nowMs))
+        val cutoff = q.windowMs?.let { fmt.format(Date(nowMs - it)) }
+        val wraps = cutoff != null && cutoff > nowStr // the window crosses New Year
         val kept = ArrayList<LogLine>()
         for (l in lines) {
             if (l.isBreak) { kept += l; continue }
+            if (cutoff != null) {
+                val inWindow = if (wraps) l.time >= cutoff || l.time <= nowStr else l.time >= cutoff
+                if (!inWindow) continue
+            }
             if (LEVELS.indexOf(l.level) < minIdx) continue
             if (q.appOnly && l.tag !in APP_TAGS) continue
             if (needle.isNotEmpty() && !l.raw.lowercase().contains(needle)) continue

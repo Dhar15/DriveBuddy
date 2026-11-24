@@ -5,6 +5,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 class LogFilterTest {
     private fun l(s: String) = LogParser.parse(s)!!
@@ -54,5 +56,21 @@ class LogFilterTest {
         val err = l("11-24 20:23:11.000 25012 25012 E DriveBuddy: boom")
         val r = LogFilter.apply(listOf(banner, info, banner, err), LogQuery(minLevel = 'E'))
         assertEquals(2, r.rows.size) // only the second banner and the error
+    }
+
+    private fun ms(s: String) = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).parse(s)!!.time
+
+    @Test fun timeWindowKeepsOnlyRecentLines() {
+        val old = l("11-24 19:30:00.000 1 1 I DriveBuddy: old")
+        val recent = l("11-24 20:30:00.000 1 1 I DriveBuddy: recent")
+        val r = LogFilter.apply(listOf(old, recent), LogQuery(windowMs = 3_600_000L), nowMs = ms("2026-11-24 21:00:00"))
+        assertEquals(listOf("recent"), r.rows.map { it.message })
+    }
+
+    @Test fun timeWindowWorksAcrossNewYear() {
+        val early = l("12-31 20:00:00.000 1 1 I DriveBuddy: early")
+        val late = l("12-31 23:45:00.000 1 1 I DriveBuddy: late")
+        val r = LogFilter.apply(listOf(early, late), LogQuery(windowMs = 3_600_000L), nowMs = ms("2027-01-01 00:30:00"))
+        assertEquals(listOf("late"), r.rows.map { it.message })
     }
 }

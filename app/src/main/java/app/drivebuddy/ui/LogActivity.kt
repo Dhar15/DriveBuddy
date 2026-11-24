@@ -57,6 +57,15 @@ class LogActivity : Activity() {
     private var query = LogQuery(newestFirst = true)
     private var loadId = 0
     private var pending: Runnable? = null
+    private var curDay = 0
+    private var curWin = 0
+    private val windows = listOf(
+        "All time" to null,
+        "Last 1 hour" to 3_600_000L,
+        "Last 3 hours" to 3 * 3_600_000L,
+        "Last 1 day" to 24 * 3_600_000L,
+        "Last 1 week" to 7 * 24 * 3_600_000L,
+    )
 
     private lateinit var days: Spinner
     private lateinit var count: TextView
@@ -87,36 +96,52 @@ class LogActivity : Activity() {
             addView(pill("Share", filled = true) { share() }, lp(WRAP_CONTENT, WRAP_CONTENT, left = 8.dp()))
         })
 
-        // Day and level pickers, side by side, each in a rounded card
+        // Row 1: day and time window (choosing one resets the other)
+        curDay = if (files.isNotEmpty()) 1 else 0
         days = Spinner(this).apply {
             val labels = listOf("All days") + files.map { dayLabel(it.name) }
             adapter = ArrayAdapter(this@LogActivity, android.R.layout.simple_spinner_dropdown_item, labels)
-            if (files.isNotEmpty()) setSelection(1)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) = reload()
-                override fun onNothingSelected(p: AdapterView<*>?) {}
-            }
+            setSelection(curDay)
         }
+        val windowSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@LogActivity, android.R.layout.simple_spinner_dropdown_item, windows.map { it.first })
+        }
+        days.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (pos == curDay) return
+                curDay = pos
+                if (pos != 0 && curWin != 0) { curWin = 0; windowSpinner.setSelection(0); query = query.copy(windowMs = null) }
+                reload()
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        windowSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (pos == curWin) return
+                curWin = pos
+                if (pos != 0 && curDay != 0) { curDay = 0; days.setSelection(0) }
+                query = query.copy(windowMs = windows[pos].second)
+                reload()
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(card(days), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(card(windowSpinner), lp(0, WRAP_CONTENT, weight = 1f, left = 8.dp()))
+        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 14.dp()))
+
+        // Row 2: level and "DriveBuddy only"
         val levels = listOf("All levels" to 'V', "Info and up" to 'I', "Warnings and up" to 'W', "Errors only" to 'E')
         val levelSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@LogActivity, android.R.layout.simple_spinner_dropdown_item, levels.map { it.first })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (levels[pos].second == query.minLevel) return
                     query = query.copy(minLevel = levels[pos].second); reload()
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
-        }
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(card(days), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(card(levelSpinner), lp(0, WRAP_CONTENT, weight = 1f, left = 8.dp()))
-        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 14.dp()))
-
-        // Toggles (checked state is set before the listener so nothing reloads twice)
-        val newest = CheckBox(this).apply {
-            text = "Newest first"; setTextColor(ink); isChecked = true
-            setOnCheckedChangeListener { _, on -> query = query.copy(newestFirst = on); reload() }
         }
         val appOnly = CheckBox(this).apply {
             text = "DriveBuddy only"; setTextColor(ink); isChecked = true
@@ -124,9 +149,10 @@ class LogActivity : Activity() {
         }
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(newest, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(appOnly, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 4.dp()))
+            gravity = Gravity.CENTER_VERTICAL
+            addView(card(levelSpinner), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(appOnly, lp(0, WRAP_CONTENT, weight = 1f, left = 8.dp()))
+        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 8.dp()))
 
         // Search
         val search = EditText(this).apply {
@@ -143,10 +169,20 @@ class LogActivity : Activity() {
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             })
         }
-        root.addView(card(search), lp(MATCH_PARENT, WRAP_CONTENT, top = 4.dp()))
+        root.addView(card(search), lp(MATCH_PARENT, WRAP_CONTENT, top = 8.dp()))
 
+        // Count line, with "Newest first" on the right
         count = TextView(this).apply { setTextColor(Color.parseColor("#8A8A93")); textSize = 12f }
-        root.addView(count, lp(WRAP_CONTENT, WRAP_CONTENT, top = 10.dp()))
+        val newest = CheckBox(this).apply {
+            text = "Newest first"; setTextColor(ink); isChecked = true
+            setOnCheckedChangeListener { _, on -> query = query.copy(newestFirst = on); reload() }
+        }
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(count, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(newest)
+        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 6.dp()))
 
         val list = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@LogActivity)
@@ -154,6 +190,7 @@ class LogActivity : Activity() {
         }
         root.addView(list, lp(MATCH_PARENT, 0, weight = 1f, top = 6.dp()))
         setContentView(root)
+        reload()
         Log.i(tag, "log viewer opened: ${files.size} day files")
     }
 
@@ -203,7 +240,9 @@ class LogActivity : Activity() {
         val sel = days.selectedItemPosition
         val q = query
         io.execute {
-            val chosen = if (sel <= 0) files.reversed() else listOf(files[sel - 1])
+            val now = System.currentTimeMillis()
+            val chosen = (if (sel <= 0) files.reversed() else listOf(files[sel - 1]))
+                .filter { q.windowMs == null || it.lastModified() >= now - q.windowMs }
             val lines = chosen.flatMap { f ->
                 try { f.readLines() } catch (e: Exception) { Log.w(tag, "log read failed: ${e.javaClass.simpleName}"); emptyList() }
             }.mapNotNull(LogParser::parse)
@@ -212,7 +251,7 @@ class LogActivity : Activity() {
                 if (id != loadId) return@post
                 shown = result.rows
                 adapter.rows = result.rows
-                adapter.showDate = sel <= 0
+                adapter.showDate = sel <= 0 && (q.windowMs ?: Long.MAX_VALUE) > 3 * 3_600_000L
                 adapter.notifyDataSetChanged()
                 count.text = "${result.total} lines" +
                         if (result.total > result.rows.count { !it.isBreak }) " (showing the newest ${result.rows.count { !it.isBreak }})" else ""
