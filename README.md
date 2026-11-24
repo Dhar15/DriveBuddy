@@ -4,7 +4,7 @@
 
 # DriveBuddy
 
-**A hands-free voice buddy for the driver's seat.** Say "Hi Oreo", get an instant spoken acknowledgement, and ask for what you need: navigate, call, text, play music, set a timer, find a petrol pump, hear the news, or just have a chat. All without touching the phone, and without opening the app.
+**A hands-free voice buddy for the driver's seat.** Say "Hi Oreo", get an instant spoken acknowledgement, and ask for what you need: navigate, call, text, play music, set a timer, find a petrol pump, hear the news, get the weather, start a morning/evening commute briefing, or just have a chat. All without touching the phone, and without opening the app.
 
 Built for one phone (OnePlus Nord 5, Android 15) and one driver, in Kotlin. Open-source parts wherever possible, no paid services, no backend of its own.
 
@@ -52,7 +52,7 @@ Phrases below are examples; the parser accepts natural variations.
 | Area | What you can say | How it is done |
 |---|---|---|
 | **Wake and acknowledge** | "Hi Oreo" or tap the orb | Custom on-device wake-word model, then a short spoken ack clip |
-| **Navigation** | "Navigate to Home", "Take me to Indiranagar" | Saved places and free-form addresses, opened in Google Maps. Last trips are remembered |
+| **Navigation** | "Navigate to Home", "Take me to Indiranagar" | Saved places (with an optional exact Maps location) and free-form addresses, opened in Google Maps. Says the drive time before it starts. Last trips are remembered |
 | **Calls** | "Call Papa" | Contacts name matching, then the system dialler. Works on a locked phone |
 | **Text messages** | "Text Papa I'm on my way" or "Text Papa" then dictate | Reads the message back, asks yes/no, confirms real delivery with sent-intent callbacks |
 | **Music (Spotify)** | "Play Husn by Anuv Jain" | Spotify Web API search, best-match picking, verified playback |
@@ -60,17 +60,20 @@ Phrases below are examples; the parser accepts natural variations.
 | | "Play any song" | Plays your Liked Songs, shuffled |
 | | "Play my playlist driving", "a song from any of my playlists" | Plays your playlist, shuffled |
 | | "Pause", "next", "previous", "stop" | System media session control |
-| **Volume** | "Volume up", "set volume to 60", "mute" | Audio manager, reports before and after |
+| **Volume** | "Volume up", "set volume to 60", "mute" | Audio manager, reports before and after. If the phone volume is very low, DriveBuddy raises it a few steps so the assistant is audible |
 | **Timers and alarms** | "Set a timer for 10 minutes", "Alarm at 6:30 AM" | The Clock app's own intents |
 | **Alarm check** | "What's my next alarm?", "Show my alarms" | Reads the next alarm from the system and opens the Clock's list. Turning an alarm off by voice is not possible on the OnePlus Clock (see [Known limitations](#known-limitations)), so "cancel my alarm" opens the list instead |
 | **Reminders** | "Remind me to call the bank in 2 hours" | Created as Google Calendar events |
 | **To-dos and notes** | "Add milk to my shopping list", "Note: parking is on level 3" | Handed to Google Keep |
 | **App launching** | "Open WhatsApp" | Fuzzy matching on installed apps. Works on a locked phone |
 | **Phone controls** | "Flashlight on", "Do not disturb on" | Camera torch and notification-policy APIs |
-| **Weather** | "What's the weather?" | Open-Meteo, from your location |
+| **Weather** | "What's the weather?" | Open-Meteo from your location, shown as a card (current conditions, then Temp / Rain / Wind tabs with the next hours) and read out |
 | **Time and date** | "What's the time?", "What day is it?" | Read from the phone's clock, spoken in plain words |
 | **Nearby places** | "Find a petrol pump near me" | Google Places search, nearest three as swipeable full-screen cards with distance and a rough drive time (tap or say 1, 2, 3, "more", "cancel"), then navigate. The card slides to each place as it is read out |
 | **News** | "What's the news today?", "World news" | Latest headlines from public RSS feeds (The Hindu for India, BBC for world), five at a time as swipeable full-screen cards that follow the voice. Say a number or tap to open the story in the browser, "more" for the next five. Stories already read out are skipped for 24 hours, so asking again brings fresh ones |
+| **Stop navigation** | "Stop navigation", "exit navigation" | Presses Maps' own "Exit navigation" notification action (needs notification access) |
+| **Commute** | "Let's commute" | A chained briefing: welcome, weather, top five headlines, word of the day, GK of the day, drive time to home or work, then music. Say "cancel" or tap Talk to abort |
+| **Word and GK of the day** | Part of the commute | One word with meaning and example, and one general-knowledge fact, shown as cards. Prefetched and cached so they are ready instantly |
 | **Follow-up questions** | Any "which one?" or "shall I send it?" | The assistant listens again without needing the wake word |
 | **Chat with Oreo** | "Tell me a joke", "How's it going?", or anything not covered above | Anything the rules don't recognise becomes a short spoken conversation with a free LLM (Groq). It keeps listening without the wake word; end it with "thanks" or "that's all", or stay quiet. A real command said mid-chat still runs normally |
 
@@ -82,7 +85,7 @@ Interruption works too: tap the orb while it is speaking and it stops and listen
 
 ```
 "Hi Oreo"
-   │  wake-word model fires (score ≥ 0.7, two frames in a row, loudness check)
+   │  wake-word model fires (score ≥ 0.7 for two frames, or one very strong frame, plus a loudness check)
    ▼
 ack clip plays ──► music pauses ──► speech recogniser listens
    │
@@ -100,6 +103,8 @@ DriveService.respond(command)
 finishInteraction: log latency, resume music if appropriate, resume wake-word listening
 ```
 
+The commute chains several of these steps in one interaction: each step finishes, then a hook (nextStep) starts the next, so the session stays open from the welcome to the music.
+
 Every stage is timed by a latency tracker and written to the log, so a slow interaction can be explained rather than guessed at.
 
 ---
@@ -115,27 +120,30 @@ external APIs, and integrations.
 
 ### Main components
 
-| Component | Responsibility |
-|---|---|
+| Component | Responsibility                                                                                                                                                                                                                      |
+|---|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `service/DriveService` | The heart. Foreground service (microphone type). Owns the interaction state machine, follow-up questions, watchdog and audio focus, and routes each command to its feature handler. Also holds the chat conversation and plain navigation |
-| `service/Conversation` | The narrow interface a feature handler uses to talk to the service: speak, ask, show cards, yes/no, late messages. Keeps handlers small and testable |
-| `DriveVoiceService`, `DriveSessionService`, `DriveRecognitionService` | Register DriveBuddy as an Android assistant, which exempts it from background-start limits so the wake word can launch a session with the app closed |
-| `audio/OpenWakeWord`, `audio/WakeWord` | Wake-word detection loop on a background thread |
-| `audio/SpeechCapture` | `SpeechRecognizer` wrapper: on-device engine preferred, restart-after-pause and release-after-each-result to avoid "busy" races |
-| `audio/Speaker`, `audio/AckVoice`, `audio/Cue` | Text-to-speech, the "Mhm" ack clip, and short listening/ack beeps |
-| `command/CommandParser` | Rule-based transcript-to-command router; every other `features/*` package keeps its pure, unit-tested logic next to the code that uses it (see [Testing](#testing)) |
-| `features/phone/*` | Calls, SMS, navigation, app launch, torch, DND, timer, alarm, note, reminder, volume, media control |
-| `features/music/*` | Spotify: OAuth with PKCE, encrypted token vault, search, playback, playlist and library reads, plus song and playlist matching |
-| `features/nearby/*`, `features/weather/*`, `common/LocationHelper` | Network lookups and location |
-| `features/news/*` | RSS client, headline cleaning, "not heard before" filtering and the 24-hour memory of what was read, spoken-number parsing |
-| `features/clock/*` | Alarm and reminder time handling, spoken time and date, next-alarm lookup |
-| `features/chat/*` | One call to Groq's chat endpoint, the conversation memory, and a per-day allowance kept on the phone |
-| `service/OverlayAnchor` | A tiny overlay window so Maps and Spotify may be opened from the background |
-| `features/music/MediaListener` | Notification-listener service giving access to active media sessions |
-| `ui/DriveState`, `DriveBus` | UI state, choice cards, tap events and card-paging events, shared between service and screen |
-| `ui/MainActivity`, `SettingsActivity`, `SetupActivity`, `PlacesActivity`, `JourneyActivity` | Home screen (including the swipeable cards), settings, first-run permission prompts, saved places, trip history |
-| `features/navigation/*` | Small JSON stores for named places and the last ten trips |
-| `ui/OrbView`, `ui/SettingsIconView` | The floating amber-to-violet orb and header icon |
+| `service/Conversation` | The narrow interface a feature handler uses to talk to the service: speak, ask, show cards, yes/no, late messages. Keeps handlers small and testable                                                                                |
+| `DriveVoiceService`, `DriveSessionService`, `DriveRecognitionService` | Register DriveBuddy as an Android assistant, which exempts it from background-start limits so the wake word can launch a session with the app closed                                                                                |
+| `audio/OpenWakeWord`, `audio/WakeWord` | Wake-word detection loop on a background thread                                                                                                                                                                                     |
+| `audio/SpeechCapture` | `SpeechRecognizer` wrapper: on-device engine preferred, restart-after-pause and release-after-each-result to avoid "busy" races                                                                                                     |
+| `audio/Speaker`, `audio/AckVoice`, `audio/Cue` | Text-to-speech, the "Mhm" ack clip, and short listening/ack beeps                                                                                                                                                                   |
+| `command/CommandParser` | Rule-based transcript-to-command router; every other `features/*` package keeps its pure, unit-tested logic next to the code that uses it (see [Testing](#testing))                                                                 |
+| `features/phone/*` | Calls, SMS, navigation, app launch, torch, DND, timer, alarm, note, reminder, volume, media control                                                                                                                                 |
+| `features/music/*` | Spotify: OAuth with PKCE, encrypted token vault, search, playback, playlist and library reads, plus song and playlist matching                                                                                                      |
+| `features/nearby/*`, `features/weather/*`, `common/LocationHelper` | Network lookups and location. Weather also has the hourly card data (WeatherHours), the place-name lookup (PlaceName) and the canvas-drawn ui/WeatherIconView                      |
+| `features/news/*` | RSS client, headline cleaning, "not heard before" filtering and the 24-hour memory of what was read, spoken-number parsing                                                                                                          |
+| `features/clock/*` | Alarm and reminder time handling, spoken time and date, next-alarm lookup                                                                                                                                                           |
+| `features/chat/*` | One call to Groq's chat endpoint, the conversation memory, and a per-day allowance kept on the phone                                                                                                                                |
+| `service/OverlayAnchor` | A tiny overlay window so Maps and Spotify may be opened from the background                                                                                                                                                         |
+| `features/music/MediaListener` | Notification-listener service giving access to active media sessions                                                                                                                                                                |
+| `ui/DriveState`, `DriveBus` | UI state, choice cards, tap events and card-paging events, shared between service and screen                                                                                                                                        |
+| `ui/MainActivity`, `SettingsActivity`, `SetupActivity`, `PlacesActivity`, `JourneyActivity` | Home screen (including the swipeable cards), settings, first-run permission prompts, saved places, trip history                                                                                                                     |
+| features/navigation/* | Stores for named places (with optional exact points) and the last ten trips; Routes API drive-time lookups (EtaClient, EtaQuota, EtaText); Places Autocomplete for saving exact points (PlaceSuggestClient, SuggestQuota); NavExit for stopping Maps navigation |
+| `ui/OrbView`, `ui/SettingsIconView` | The floating amber-to-violet orb and header icon                                                                                                                                                                                    |
+| `features/commute/*` | `CommuteHandler` (the step chain), `CommuteDestination` (home or work, whichever is farther), `CommuteMusic` |
+| `features/learning/*` | Word and GK of the day: clients, `DailyGk`, `LearningText`, `LearningCache`, `LearningHandler` (prefetch and daily cache) |
+| `audio/AssistantVolume` | Decides how far to raise a too-low volume |
 
 ### Project layout
 
@@ -147,20 +155,22 @@ app.drivebuddy
 │                      system-bound entry points (kept at the root: Android stores them by name)
 ├─ service/            DriveService (interaction state machine, routing), Conversation (what handlers may ask of it), OverlayAnchor
 ├─ ui/                 MainActivity, SetupActivity, SettingsActivity, PlacesActivity, JourneyActivity,
-│                      OrbView, DriveState (DriveBus), ReadAlong
-├─ audio/              WakeWord, SpeechCapture, Speaker, AckVoice, Cue
+│                      OrbView, WeatherIconView, DriveState (DriveBus), ReadAlong
+├─ audio/              WakeWord, SpeechCapture, Speaker, AckVoice, Cue, AssistantVolume
 ├─ command/            CommandParser (Command, AlarmTarget), YesNo
 ├─ common/             LatencyTracker, LatencyLog, LocationHelper, LogText
 └─ features/
    ├─ music/           MusicHandler, spotify/* (auth, API, token vault, Pkce), PlayIntent, SongQuery, TrackPicker, MediaListener
-   ├─ navigation/      SavedPlaces, Journeys
+   ├─ navigation/      NavigationHandler, SavedPlaces, Journeys, EtaClient, EtaQuota, EtaText, NavExit, PlaceSuggestClient, SuggestQuota
    ├─ nearby/          NearbyHandler, NearbyClient, NearbyText, PlaceChoice, TripEstimate
    ├─ news/            NewsHandler, NewsClient, NewsText, NewsPicker, NewsSeen, StoryChoice
-   ├─ weather/         WeatherHandler, WeatherClient, WeatherText
+   ├─ weather/         WeatherHandler, WeatherClient, WeatherText, WeatherHours, PlaceName
    ├─ chat/            LlmClient, BuddyChat, ChatQuota, DailyCap
    ├─ communication/   CommunicationHandler (calls and texts), NameMatcher, SmsText
    ├─ clock/           AlarmHandler, AlarmTime, ReminderTime, TimeText, AlarmText, AlarmControls
-   └─ phone/           PhoneActions, PhoneControls, AppMatcher
+   ├─ phone/           PhoneActions, PhoneControls, AppMatcher
+   ├─ commute/         CommuteHandler, CommuteDestination, CommuteMusic
+   └─ learning/        LearningHandler, WordOfDayClient, GkClient, DailyGk, LearningText, LearningCache
 ```
 
 The unit tests mirror this layout. Each voice feature has a small handler class next to its logic (`NewsHandler`, `NearbyHandler`, `MusicHandler`, and so on). A handler never touches the service directly: it receives a `Conversation` and uses only that, so `DriveService` stays a router plus the plumbing for listening, speaking and follow-up questions.
@@ -172,7 +182,7 @@ The unit tests mirror this layout. Each voice feature has a small handler class 
 ### Wake word
 - **Pipeline:** openWakeWord's `melspectrogram.onnx` → `embedding_model.onnx` → a custom-trained `hi_oreo.onnx`, run with `onnxruntime-android`.
 - **Why custom:** off-the-shelf engines struggled with the owner's accent and with music playing in the car. A purpose-trained model for "Hi Oreo" fired on the first attempt.
-- **False-trigger control:** a frame scoring 0.7 or more must repeat for two frames in a row (80 ms each), **or** one frame must reach 0.85, with a loudness check on top so near-silence can never wake it. The strong-frame rule exists because real wake-ups sometimes produce a single strong frame instead of two (seen in the logs); every real wake-up so far peaked at 0.85 or more, while every noise burst stayed under 0.8. The word "Oreo" alone can still trigger it (a conscious choice to leave it).
+- **False-trigger control:** a frame scoring 0.7 or more must repeat for two frames (80 ms each), **or** one frame must reach 0.85, with a loudness check so near-silence can never wake it. The strong-frame rule exists because real wake-ups sometimes produce a single strong frame. It is not airtight: a false trigger has been logged with a single 0.90 frame, so the rule is under review (see [Known limitations](#known-limitations)). The word "Oreo" alone can still trigger it.
 - **Why not Bluetooth or a button:** the car has neither, so the wake word is the only hands-free trigger. The power button is deliberately untouched.
 
 ### Always-on, no app open
@@ -249,12 +259,27 @@ The Clock app owns alarms, and Android gives other apps only a few hooks: settin
 ### Navigation and background launching
 Maps is started with a `google.navigation:` intent. Android blocks background activity launches, so a small overlay window (`OverlayAnchor`, "Display over other apps") is shown during an interaction. That visible window is what allows Maps, Spotify and the Clock app to open while the screen is locked.
 
+### Drive times and stopping navigation
+- **Drive time:** before Maps opens, DriveBuddy asks the Google Routes API (traffic-aware) for the drive time and says it ("about 25 minutes"). Nearby picks get the same. An in-app cap of 50 lookups a day sits on top of the Cloud quota; if a lookup fails, navigation simply starts without the time.
+- **Stopping:** Android gives no way to cancel Maps navigation, so DriveBuddy listens for Maps' own notification and presses its "Exit navigation" action through the notification listener.
+
+### Exact saved places
+Saving "Work" as plain text sends Maps a text search, which can open a result list instead of starting. In the places screen, typing a saved place's address shows Google Places Autocomplete suggestions. Picking one stores the exact point (Place Details, location only), shown in green as "Exact location". Navigation then uses that point. Places saved without one still work as a text search. Autocomplete uses session tokens and an in-app cap of 150 requests a day.
+
+### Weather card
+Open-Meteo returns current, hourly and daily data in one call. The card shows the place name (looked up in parallel through the phone's geocoder), the current conditions with a drawn icon (day or night), and Temp / Rain / Wind tabs over the next hours. The card fades out when dismissed or when the next step begins.
+
+### Commute
+`CommuteHandler` is a list of steps run one after another through the `nextStep` hook in `finishInteraction`, so the interaction stays open between steps. Steps: welcome, weather, news (top five, spoken without the pick-a-number prompt), word of the day, GK of the day, drive time (home or work, whichever is farther; asks "Where are you headed?" if neither is saved), music. If location is off it offers to open the settings, waits up to 90 seconds for it to come on, then continues with the weather. Location is warmed up and the learning cards are prefetched when the commute starts, so the first spoken step is not slow. "Cancel", "stop" or a tap on Talk aborts the chain.
+
+### Word and GK of the day
+Both come from the sources of the owner's Sprint app: a Google Apps Script endpoint for the word (one word a day) and a Supabase table for GK facts (read with the anon key). They are prefetched with a longer timeout and one retry, then cached for the day (`LearningCache`), so asking again is instant and works offline. `DailyGk` picks the fact for the day.
+
 ### State and UI
 `DriveBus` is a small in-process event bus carrying the interaction state, status text, choice cards, tap events and card-paging events between the service and the activity. The UI is a single dark "night instrument" screen: a floating amber-to-violet orb, one headline, one status line, suggestion chips, the last trip, and a red "End session" pill. Pick-one lists open as swipeable full-screen cards. The launcher icon is the same orb, shipped as an adaptive vector icon with a themed single-colour variant, and the notification uses a white orb glyph (no image files, so it stays sharp at every size).
 
 ### Storage
-Only small things, all on the phone: encrypted Spotify tokens, saved places (JSON), the last ten trips (JSON), the links of news articles already read out (for 24 hours), a daily chat counter, and a rolling latency log. Reminders live in Calendar and notes in Keep; DriveBuddy keeps no memory store of its own on purpose.
-
+Only small things, all on the phone: encrypted Spotify tokens, saved places (JSON, with optional exact points), the last ten trips (JSON), the links of news articles already read out (for 24 hours), the day's cached word and GK, daily counters (chat, drive-time and autocomplete lookups) and a rolling latency log. Reminders live in Calendar and notes in Keep; DriveBuddy keeps no memory store of its own on purpose.
 ---
 
 ## Data, privacy and security
@@ -265,19 +290,23 @@ Only small things, all on the phone: encrypted Spotify tokens, saved places (JSO
 |---|---|---|
 | Android speech recogniser | Audio of your request | Each request. On-device when the engine supports it, otherwise the system's online recogniser |
 | Spotify Web API | Search text, playback commands, your token | Music requests |
-| Google Places API | The place type you asked for and your coordinates | "Find … near me" |
+| Google Places API | The place type you asked for and your coordinates; or, when saving a place, the text you type (and a session token) | "Find … near me"; editing saved places |
 | Open-Meteo | Your coordinates, rounded to about 1 km | "What's the weather?" |
 | The Hindu / BBC (news RSS) | Nothing beyond the request itself (the phone's IP address); no account, no cookies | News requests |
 | Groq (chat) | Only the sentence DriveBuddy did not recognise, plus the last few chat messages. No contacts, location or message content | Chatting with Oreo |
 | Google Maps | The destination | Navigation (via the Maps app, not DriveBuddy) |
+| Google Routes API | Your coordinates (or origin) and the destination | Drive time before navigation and in the commute |
+| Word-of-the-day endpoint (Google Apps Script) | Nothing beyond the request itself | Commute, once a day |
+| Supabase (GK table) | The anon key and a read request; no personal data | Commute, once a day |
+| Android geocoder | Coordinates, handled by the system's geocoding service | Place name on the weather card |
 
 There is no DriveBuddy server, no analytics SDK and no account.
 
 ### Safeguards
 - **Wake-word audio stays on the phone.** Detection is fully on-device.
-- **Secrets stay out of git.** The Maps/Places key lives in `local.properties` (git-ignored) and reaches the app through `BuildConfig.MAPS_API_KEY`. The Groq chat key is handled the same way (`GROQ_API_KEY`). The Spotify client ID is committed on purpose: with PKCE it is not a secret.
+- **Secrets stay out of git.** The Maps/Places/Routes key lives in local.properties(git-ignored) and reaches the app throughBuildConfig.MAPS_API_KEY. The Groq key (GROQ_API_KEY), the Supabase URL and key (SUPABASE_URL, SUPABASE_ANON_KEY) and the word endpoint (WORD_API_URL) are handled the same way. The Supabase anon key can also write to its table, so it must stay out of git. Because keys are compiled in, do not distribute the APK. The Spotify client ID is committed on purpose: with PKCE it is not a secret.
 - **Tokens encrypted at rest** with a hardware-backed Keystore key.
-- **Logs never contain** phone numbers or coordinates. Spoken text is logged as spoken, so contact names, search text and destinations can appear, since the app is single-user and the log is the owner's. The exceptions are private text: the body of a text message (and its read-back and confirmation), and the chat conversation in both directions, are logged only as a character count (`LogText`), and the saved latency file records `(not logged)` for them.
+- **Logs never contain** phone numbers or coordinates. Spoken text is logged as spoken, so contact names, search text and destinations can appear, since the app is single-user and the log is the owner's. Typed place queries in the places screen are logged as a character count only. The other exceptions are private text: the body of a text message (and its read-back and confirmation), and the chat conversation in both directions, are logged only as a character count (`LogText`), and the saved latency file records `(not logged)` for them.
 - **Confirmation before sending** any text message.
 - **Least privilege:** each permission exists for a named feature (see [Permissions](#permissions)); permissions are requested on first run and can be re-toggled from Settings.
 - **Locked-phone policy:** calls, texts and app launching deliberately keep working on a locked phone, because that is exactly when you are driving.
@@ -295,8 +324,10 @@ The standing rule: **no spend, other than a card on file for Google Cloud, and o
 | Open-Meteo | Free, no key, non-commercial use                                            | Attribution below                                                                                                           |
 | Groq (chat LLM) | Free tier, no card (limits change often, so **verify in the Groq console**) | An in-app cap of 100 chats a day, and the provider's own rate limit                                                         |
 | News (RSS) | Free, public feeds | Headline and summary shown with a link to the publisher's page; nothing is stored beyond the article links read in the last 24 hours |
-| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month*)           | Cheap field mask (no ratings or opening hours); hard quotas of about 30 requests per day and 10 per minute in Cloud Console |
+| Google Places (New) | Free monthly allowance (about 5,000 Pro-tier requests per month*) | Cheap field masks (no ratings or opening hours); Cloud quota of about 30 searches a day and 10 a minute; Autocomplete capped in-app at 150 a day |
 | Google Maps navigation | Free (uses the installed app)                                               | N/A                                                                                                                         |
+| Google Routes (drive times) | India Essentials tier, free up to 70,000 a month | In-app cap of 50 lookups a day; Cloud quota of about 100 a day suggested |
+| Word of the day (Apps Script) and GK (Supabase) | Free tiers | One request each per day, cached |
 
 Because quotas are enforced by Google rather than by the app, a bug or a loop cannot generate a bill. At the owner's expected use (a handful of nearby searches a month) the allowance is not approached.
 
@@ -363,7 +394,7 @@ A **personal-use, portfolio-grade** assistant. It is not a public product and ha
 
 ## Testing
 
-Everything that can be Android-free is, so it can be unit-tested on the JVM: `CommandParser`, `PlayIntent`, `SongQuery`, `TrackPicker`, `NameMatcher`, `AppMatcher`, `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `TimeText`, `BuddyChat`, `DailyCap`, `Pkce`, `NewsText`, `NewsPicker`, `StoryChoice`, `ReadAlong`, `TripEstimate`, `AlarmText`.
+Everything that can be Android-free is, so it can be unit-tested on the JVM: `CommandParser`, `PlayIntent`, `SongQuery`, `TrackPicker`, `NameMatcher`, `AppMatcher`, `AlarmTime`, `ReminderTime`, `SmsText`, `YesNo`, `PlaceChoice`, `WeatherText`, `NearbyText`, `TimeText`, `BuddyChat`, `DailyCap`, `Pkce`, `NewsText`, `NewsPicker`, `StoryChoice`, `ReadAlong`, `TripEstimate`, `AlarmText`, `AssistantVolume(raised level)`,`EtaText`, `NavExit`, `CommuteDestination`, `CommuteMusic`, `WeatherHours`, `DailyGk`, `LearningText`, `Place (query building)`
 
 ```
 ./gradlew test
@@ -378,10 +409,13 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 **Requirements:** Android Studio, a physical Android 15 phone (the wake word and assistant role cannot be tested on an emulator), Spotify Premium for music.
 
 1. **Clone** the repo and open it in Android Studio.
-2. **Maps / Places and chat keys.** Create a Google Cloud project, enable *Places API (New)*, add a billing card, create an API key restricted to your app and that API, and set quotas (about 30 `SearchText` requests per day and 10 per minute). Then add to `local.properties` (never commit it). The second line is the free Groq key for the chat buddy, created at console.groq.com; both are exposed as `BuildConfig` fields by `app/build.gradle.kts`:
+2. **Google Maps key and chat key.** Create a Google Cloud project, enable *Places API (New)* (Text Search, Autocomplete and Place Details) and *Routes API*, add a billing card, create an API key restricted to your app and those APIs, and set quotas (about 30 SearchTextrequests per day and 10 per minute; about 100 Routes requests a day). Then add tolocal.properties(never commit it).GROQ_API_KEYis the free Groq key for the chat buddy. The last three are for the commute's word and GK cards and come from the owner's Sprint app. All are exposed asBuildConfigfields byapp/build.gradle.kts:
    ```
    MAPS_API_KEY=your_key_here
    GROQ_API_KEY=your_key_here
+   SUPABASE_URL=your_supabase_project_url
+   SUPABASE_ANON_KEY=your_supabase_anon_key
+   WORD_API_URL=your_word_of_the_day_endpoint
    ```
 3. **Spotify.** Create an app in the Spotify Developer Dashboard, add your account as a user, set the redirect URI used in `SpotifyAuth`, and put the **client ID** in the code (PKCE needs no secret).
 4. **Wake-word models.** Place `melspectrogram.onnx`, `embedding_model.onnx` and your trained `hi_oreo.onnx` in the app's assets. The training notebook used for the custom model is included in the project notes.
@@ -390,6 +424,7 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 7. **Make it the assistant.** Android Settings → Apps → Default apps → Digital assistant app → DriveBuddy, so it can start with the app closed.
 8. **Background location.** For nearby search and weather from an assistant-started session, grant location as **"Allow all the time"**.
 9. **Connect Spotify** from Settings → Permissions.
+10. **Notification access.** Turn it on for DriveBuddy so media control and "stop navigation" work.
 
 ---
 
@@ -403,12 +438,12 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 | Phone calls | Placing calls |
 | Text messages (SMS) | Sending confirmed texts |
 | Calendar (read/write) | Creating reminders |
-| Location (fine, coarse, background) | Nearby places and weather |
+| Location (fine, coarse, background) | Nearby places, weather, drive times and the commute |
 | Display over other apps | Allowing Maps, Spotify and Clock to open from the background |
-| Notification-listener access | Controlling the active media session (pause, next, resume) |
+| Notification-listener access | Controlling the active media session (pause, next, resume) and pressing Maps' "Exit navigation" |
 | Do Not Disturb access | Toggling DND |
 | Set alarm | Timers and alarms through the Clock app |
-| Internet | Spotify, Places, Open-Meteo, chat (Groq) |
+| Internet | Spotify, Places, Routes, Open-Meteo, chat (Groq), word and GK of the day |
 | Kill background processes | Closing apps when a session ends |
 
 ---
@@ -427,6 +462,10 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 - The chat buddy is only as good as a small free model: it can be wrong, it cannot take actions, it is limited to 100 chats a day and eight exchanges per conversation, and it needs internet.
 - The speech recogniser can mishear casual phrases (for example "what's up" as "WhatsApp"); the chat simply answers what it was given.
 - Free LLM models can be retired by the provider without much notice (it has already happened once during this project).
+- Word and GK of the day depend on the owner's Sprint sources (Apps Script and Supabase); if those change or go down, the commute skips those cards after one retry.
+- Saved places without an exact location are sent to Maps as text and can open a result list instead of starting navigation; re-save them from the autocomplete list.
+- Albums and playlists by name for "play from my album" are not supported yet.
+- The commute uses the top five stories not heard in the last 24 hours, so it may read fewer than five.
 - English only.
 
 ---
@@ -435,13 +474,16 @@ Anything involving the microphone, Maps, Spotify, location or the lock screen is
 
 Next, roughly in order:
 
-1. **Multi-action commands:** "Take me home and play my driving playlist".
+1. **Multi-action commands:** "Take me home and play my driving playlist". The commute chains fixed steps; free-form chaining is still open.
 2. **Timers and reminders:** check and cancel by voice. Alarm checking is done; alarm cancelling is blocked by the Clock app (see [Alarms: what Android allows](#alarms-what-android-allows)).
-3. **Spotify extras:** albums, "play that again", "not that one".
+3. **Spotify extras:** albums and "play from my album X", "play that again", "not that one".
 4. **Recogniser hint phrases** built from your artists, playlists and contacts.
 5. **Housekeeping:** shorter spoken place list and a tidier nearby-search label.
 6. **News next steps:** "tell me more about story two" (short summary through the chat model), and mixing several feeds into one list.
 7. **Chat buddy next steps:** start speaking the first sentence while the rest of the reply arrives, and consider the LLM as a second-chance intent parser for paraphrased commands (structured output, with a confirmation step).
+8. **Wake-word tuning:** a test harness to replay logged false triggers and tighten the rule, plus a deafness check so real wake-ups are not lost. On hold.
+9. **Standalone daily cards:** "word of the day" and "GK of the day" as their own voice commands outside the commute.
+10. **Housekeeping:** remove leftover probe code and unused alarm code; tag v1.0.
 
 ---
 
@@ -456,3 +498,5 @@ Next, roughly in order:
 - **Music:** Spotify Web API. DriveBuddy is not affiliated with or endorsed by Spotify.
 - **Places and navigation:** Google Places API (New) and Google Maps. Not affiliated with or endorsed by Google.
 - Spotify, Google, Google Maps, Keep and Calendar are trademarks of their respective owners.
+- **Drive times and exact places:** Google Routes API and Places Autocomplete. Not affiliated with or endorsed by Google.
+- **Word and GK of the day:** content served from the owner's own Sprint backend (Google Apps Script and Supabase).
