@@ -54,8 +54,24 @@ object LogFilter {
             }
             kept += l
         }
-        val total = kept.count { !it.isBreak }
-        val tail = if (kept.size > maxRows) kept.takeLast(maxRows) else kept
+        val pruned = pruneEmptyBreaks(kept)
+        val total = pruned.count { !it.isBreak }
+        val tail = if (pruned.size > maxRows) pruned.takeLast(maxRows) else pruned
         return LogResult(if (q.newestFirst) tail.asReversed() else tail, total)
+    }
+
+    /** Drops separators with no lines under them (e.g. a session with no errors when "Errors only"). */
+    private fun pruneEmptyBreaks(rows: List<LogLine>): List<LogLine> {
+        val out = ArrayList<LogLine>()
+        var anyData = false // any line since the next session banner
+        var segData = false // any line since the next separator of any kind
+        for (r in rows.asReversed()) {
+            when {
+                !r.isBreak -> { anyData = true; segData = true; out += r }
+                r.raw.startsWith(LogLine.SESSION_MARK) -> { if (anyData) out += r; anyData = false; segData = false }
+                else -> { if (segData) out += r; segData = false }
+            }
+        }
+        return out.asReversed()
     }
 }

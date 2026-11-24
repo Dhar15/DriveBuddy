@@ -48,4 +48,11 @@ class LogFilterTest {
         val many = (1..10).map { info }
         assertEquals(3, LogFilter.apply(many, LogQuery(), maxRows = 3).rows.size)
     }
+
+    @Test fun errorsOnlyHidesSessionsWithNoErrors() {
+        val banner = LogParser.parse("========== NEW SESSION 2026-11-24 20:37:14.294 pid=1 ==========")!!
+        val err = l("11-24 20:23:11.000 25012 25012 E DriveBuddy: boom")
+        val r = LogFilter.apply(listOf(banner, info, banner, err), LogQuery(minLevel = 'E'))
+        assertEquals(2, r.rows.size) // only the second banner and the error
+    }
 }
