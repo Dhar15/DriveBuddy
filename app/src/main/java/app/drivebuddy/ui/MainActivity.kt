@@ -228,6 +228,7 @@ class MainActivity : Activity() {
     /** Draws the orb, the big headline and the small line under it for one state. */
     private fun render(ui: DriveUiState) {
         orb.setState(ui.state)
+        keepScreenAwake(ui.state != DriveState.IDLE && ui.state != DriveState.OFF)
         val words = when (ui.state) {
             DriveState.OFF, DriveState.IDLE -> "Tap to talk"
             DriveState.LISTENING -> "Listening"
@@ -928,5 +929,14 @@ class MainActivity : Activity() {
     private fun send(action: String) {
         // Talk/Stop only make sense once the session is running; the service ignores them otherwise.
         startService(Intent(this, DriveService::class.java).setAction(action))
+    }
+
+    /** Keeps the screen on while DriveBuddy is listening, thinking or speaking (cards, commute). */
+    private fun keepScreenAwake(on: Boolean) {
+        val flag = android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val isOn = (window.attributes.flags and flag) != 0
+        if (on == isOn) return
+        if (on) window.addFlags(flag) else window.clearFlags(flag)
+        Log.i("DriveBuddy", "screen: keep awake=$on")
     }
 }
