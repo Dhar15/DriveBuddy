@@ -62,7 +62,10 @@ object LogFilter {
             if (LEVELS.indexOf(l.level) < minIdx) continue
             if (q.appOnly && l.tag !in APP_TAGS) continue
             if (needle.isNotEmpty() && !l.raw.lowercase().contains(needle)) continue
-            if (needle.isEmpty() && l.tag == "DriveBuddy" && l.message.startsWith("triggered by")) {
+            val startsInteraction = l.tag == "DriveBuddy" &&
+                    (l.message.startsWith("wake word detected") ||
+                            (l.message.startsWith("triggered by") && !l.message.contains("wake word")))
+            if (needle.isEmpty() && startsInteraction) {
                 kept += LogLine.divider()
             }
             kept += l
