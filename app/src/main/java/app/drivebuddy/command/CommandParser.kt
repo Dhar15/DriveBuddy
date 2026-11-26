@@ -376,7 +376,28 @@ object CommandParser {
     private val volumeMax = setOf("max volume", "maximum volume", "full volume", "volume max", "volume maximum", "volume full")
     private val volumeHalf = setOf("half volume", "volume half")
 
+    // "increase the volume to 80", "turn the volume up to 70", "set volume to 60 percent" -> go to that level.
+    // "increase the volume by 20" -> move by that much.
+    private val volumeNumberPhrase = Regex(
+        "^(?:(?:set|put|make|change|adjust|bring|turn|increase|raise|decrease|lower|reduce|crank|bump)(?: up| down)? )?" +
+                "(?:(?:the|my) )?(?:(?:music|sound|media) )?volume(?: up| down)?(?: (to|at|by))?(?: (?:to|at))? (\\d{1,3})(?: percent)?$"
+    )
+    private val upWord = Regex("\\b(?:increase|raise|up|crank|bump|louder|higher)\\b")
+    private val downWord = Regex("\\b(?:decrease|lower|reduce|down|quieter|softer)\\b")
+
+    private fun parseVolumeNumber(core: String): Command.Volume? {
+        val m = volumeNumberPhrase.find(core) ?: return null
+        val n = m.groupValues[2].toInt().coerceIn(0, 100)
+        if (m.groupValues[1] != "by") return Command.Volume(VolumeOp.SET, n)
+        return when {
+            upWord.containsMatchIn(core) -> Command.Volume(VolumeOp.UP, n)
+            downWord.containsMatchIn(core) -> Command.Volume(VolumeOp.DOWN, n)
+            else -> null // "by 20" with no direction is ambiguous; let it fall through
+        }
+    }
+
     private fun parseVolume(core: String): Command.Volume? {
+        parseVolumeNumber(core)?.let { return it }
         val step = when {
             bigAmount.containsMatchIn(core) -> 25
             smallAmount.containsMatchIn(core) -> 5

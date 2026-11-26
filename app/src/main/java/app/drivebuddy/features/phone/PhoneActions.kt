@@ -169,7 +169,7 @@ class PhoneActions(private val context: Context) {
                         VolumeOp.DOWN -> (current - stepLevels).coerceAtLeast(min)
                         else -> Math.round(max * percent / 100f).coerceIn(min, max)
                     }
-                    audio.setStreamVolume(stream, target, AudioManager.FLAG_SHOW_UI)
+                    moveVolumeTo(audio, stream, target)
                 }
             }
             val after = audio.getStreamVolume(stream)
@@ -179,6 +179,29 @@ class PhoneActions(private val context: Context) {
             Log.w(tag, "volume change refused: ${e.message}")
             null
         }
+    }
+
+    /** setStreamVolume is ignored from the background on this phone, so fall back to key-style steps. */
+    private fun moveVolumeTo(audio: AudioManager, stream: Int, target: Int): Int {
+        audio.setStreamVolume(stream, target, AudioManager.FLAG_SHOW_UI)
+        var now = audio.getStreamVolume(stream)
+        if (now == target) return now
+        val raise = target > now
+        Log.i(tag, "volume: direct set ignored (at $now, wanted $target), stepping ${if (raise) "up" else "down"}")
+        var steps = 0
+        while (steps < 200 && ((raise && now < target) || (!raise && now > target))) {
+            audio.adjustStreamVolume(
+                stream,
+                if (raise) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                if ((raise && now + 1 >= target) || (!raise && now - 1 <= target)) AudioManager.FLAG_SHOW_UI else 0
+            )
+            val next = audio.getStreamVolume(stream)
+            if (next == now) break // no progress
+            now = next
+            steps++
+        }
+        Log.i(tag, "volume: stepped to $now after $steps steps")
+        return now
     }
 
     fun isInstalled(pkg: String): Boolean = try {
