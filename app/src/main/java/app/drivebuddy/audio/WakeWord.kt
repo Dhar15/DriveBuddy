@@ -142,7 +142,7 @@ class WakeWord(
                 best = maxOf(best, score)
                 if (score >= LOG_FROM) Log.d(tag, "wake score %.2f".format(score))
                 if (++steps % 62 == 0) { // about every 5 s
-                    Log.i(tag, "wake word alive: mic peak=$peak of 32767, best score %.2f".format(best))
+//                    Log.i(tag, "wake word alive: mic peak=$peak of 32767, best score %.2f".format(best))
                     peak = 0
                     best = 0f
                 }

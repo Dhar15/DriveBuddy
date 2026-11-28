@@ -44,6 +44,7 @@ import app.drivebuddy.features.music.MusicHandler
 import app.drivebuddy.features.music.spotify.SpotifyApi
 import app.drivebuddy.features.music.spotify.SpotifyAuth
 import app.drivebuddy.features.navigation.NavigationHandler
+import app.drivebuddy.features.ride.RideHandler
 import app.drivebuddy.features.commute.CommuteHandler
 import app.drivebuddy.features.nearby.NearbyHandler
 import app.drivebuddy.features.news.NewsHandler
@@ -157,7 +158,9 @@ class DriveService : Service() {
     private val music by lazy { MusicHandler(conversation, actions, spotifyAuth, spotify) }
     private val navigation: NavigationHandler by lazy { NavigationHandler(conversation, actions) }
     private val learning: LearningHandler by lazy { LearningHandler(conversation) }
-    private val commute: CommuteHandler by lazy { CommuteHandler(conversation, weather, news, learning, navigation, music) }
+    private val ride: RideHandler by lazy { RideHandler(conversation) }
+
+    private val commute: CommuteHandler by lazy { CommuteHandler(conversation, ride, weather, news, learning, navigation, music) }
 
     // If the recogniser never calls back, give up instead of staying busy forever.
     private val watchdog = Runnable {
@@ -407,6 +410,7 @@ class DriveService : Service() {
                 )
             }
             Command.Commute -> commute.start()
+            Command.StartRide -> ride.start()
         }
     }
 

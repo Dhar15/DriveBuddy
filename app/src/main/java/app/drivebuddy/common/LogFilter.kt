@@ -25,6 +25,8 @@ data class LogQuery(
     val text: String = "",
     val newestFirst: Boolean = false,
     val windowMs: Long? = null, // null = all time; otherwise only lines from the last windowMs
+    val fromMs: Long? = null, // start of an explicit range (inclusive)
+    val toMs: Long? = null,   // end of an explicit range (inclusive)
 )
 
 data class LogResult(val rows: List<LogLine>, val total: Int)
@@ -49,16 +51,14 @@ object LogFilter {
         val minIdx = LEVELS.indexOf(q.minLevel)
         // Log lines carry "MM-dd HH:mm:ss.SSS" (no year), which compares correctly as text.
         val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
-        val nowStr = fmt.format(Date(nowMs))
-        val cutoff = q.windowMs?.let { fmt.format(Date(nowMs - it)) }
-        val wraps = cutoff != null && cutoff > nowStr // the window crosses New Year
+        val lo = q.fromMs ?: q.windowMs?.let { nowMs - it }
+        val hi = q.toMs ?: if (q.windowMs != null) nowMs else null
+        val loStr = lo?.let { fmt.format(Date(it)) }
+        val hiStr = hi?.let { fmt.format(Date(it)) }
         val kept = ArrayList<LogLine>()
         for (l in lines) {
             if (l.isBreak) { kept += l; continue }
-            if (cutoff != null) {
-                val inWindow = if (wraps) l.time >= cutoff || l.time <= nowStr else l.time >= cutoff
-                if (!inWindow) continue
-            }
+            if (!inRange(l.time, loStr, hiStr)) continue
             if (LEVELS.indexOf(l.level) < minIdx) continue
             if (q.appOnly && l.tag !in APP_TAGS) continue
             if (needle.isNotEmpty() && !l.raw.lowercase().contains(needle)) continue
@@ -74,6 +74,12 @@ object LogFilter {
         val total = pruned.count { !it.isBreak }
         val tail = if (pruned.size > maxRows) pruned.takeLast(maxRows) else pruned
         return LogResult(if (q.newestFirst) tail.asReversed() else tail, total)
+    }
+
+    /** Lines carry "MM-dd HH:mm:ss.SSS" (no year), which compares correctly as text. lo > hi means the range crosses New Year. */
+    private fun inRange(t: String, lo: String?, hi: String?): Boolean {
+        if (lo != null && hi != null && lo > hi) return t >= lo || t <= hi
+        return (lo == null || t >= lo) && (hi == null || t <= hi)
     }
 
     /** Drops separators with no lines under them (e.g. a session with no errors when "Errors only"). */

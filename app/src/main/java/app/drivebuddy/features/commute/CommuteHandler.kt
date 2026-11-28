@@ -6,6 +6,7 @@ import app.drivebuddy.features.music.MusicHandler
 import app.drivebuddy.features.navigation.EtaClient
 import app.drivebuddy.features.navigation.EtaQuota
 import app.drivebuddy.features.navigation.NavigationHandler
+import app.drivebuddy.features.ride.RideHandler
 import app.drivebuddy.features.navigation.SavedPlaces
 import app.drivebuddy.features.news.NewsHandler
 import app.drivebuddy.features.weather.WeatherHandler
@@ -19,9 +20,10 @@ import android.provider.Settings
 import android.os.SystemClock
 import kotlin.concurrent.thread
 
-/** "Let's commute": weather, then the top news, then navigation to the other of home/work, then music. */
+/** "Let's commute": welcome, start ride, show weather, then the top news, then navigation to the other of home/work, then music. */
 class CommuteHandler(
     private val c: Conversation,
+    private val ride: RideHandler,
     private val weather: WeatherHandler,
     private val news: NewsHandler,
     private val learning: LearningHandler,
@@ -42,6 +44,7 @@ class CommuteHandler(
 
     private val steps: List<Pair<String, () -> Unit>> = listOf(
         "welcome" to { c.reply("Welcome back. Starting your commute.") },
+        "ride" to { ride.startForCommute() },
         "weather" to { weatherStep() },
         "news" to { news.handle(world = false, brief = true) },
         "word" to { learning.word() },

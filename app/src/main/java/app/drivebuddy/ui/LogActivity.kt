@@ -45,6 +45,9 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import java.util.Calendar
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import app.drivebuddy.common.LogRange
 
 /** Shows the saved log with filters and sorting, and shares what is on screen. */
 class LogActivity : Activity() {
@@ -66,6 +69,12 @@ class LogActivity : Activity() {
         "Last 1 day" to 24 * 3_600_000L,
         "Last 1 week" to 7 * 24 * 3_600_000L,
     )
+    private var fromMs: Long? = null
+    private var toMs: Long? = null
+    private lateinit var windowSpinner: Spinner
+    private lateinit var fromView: TextView
+    private lateinit var toView: TextView
+    private lateinit var clearView: TextView
 
     private lateinit var days: Spinner
     private lateinit var count: TextView
@@ -103,13 +112,14 @@ class LogActivity : Activity() {
             adapter = ArrayAdapter(this@LogActivity, android.R.layout.simple_spinner_dropdown_item, labels)
             setSelection(curDay)
         }
-        val windowSpinner = Spinner(this).apply {
+        windowSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@LogActivity, android.R.layout.simple_spinner_dropdown_item, windows.map { it.first })
         }
         days.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 if (pos == curDay) return
                 curDay = pos
+                if (pos != 0) clearRange()
                 if (pos != 0 && curWin != 0) { curWin = 0; windowSpinner.setSelection(0); query = query.copy(windowMs = null) }
                 reload()
             }
@@ -119,6 +129,7 @@ class LogActivity : Activity() {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 if (pos == curWin) return
                 curWin = pos
+                if (pos != 0) clearRange()
                 if (pos != 0 && curDay != 0) { curDay = 0; days.setSelection(0) }
                 query = query.copy(windowMs = windows[pos].second)
                 reload()
@@ -130,6 +141,23 @@ class LogActivity : Activity() {
             addView(card(days), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(card(windowSpinner), lp(0, WRAP_CONTENT, weight = 1f, left = 8.dp()))
         }, lp(MATCH_PARENT, WRAP_CONTENT, top = 14.dp()))
+
+        // From / To range
+        fromView = rangeField("From") { pick(isFrom = true) }
+        toView = rangeField("To") { pick(isFrom = false) }
+        clearView = TextView(this).apply {
+            text = "Clear"; textSize = 14f; setTextColor(Color.parseColor("#B9B2F7"))
+            setPadding(14.dp(), 12.dp(), 6.dp(), 12.dp())
+            visibility = View.GONE
+            setOnClickListener { clearRangeAndReload() }
+        }
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(card(fromView), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(card(toView), lp(0, WRAP_CONTENT, weight = 1f, left = 8.dp()))
+            addView(clearView)
+        }, lp(MATCH_PARENT, WRAP_CONTENT, top = 8.dp()))
 
         // Row 2: level and "DriveBuddy only"
         val levels = listOf("All levels" to 'V', "Info and up" to 'I', "Warnings and up" to 'W', "Errors only" to 'E')
@@ -190,8 +218,81 @@ class LogActivity : Activity() {
         }
         root.addView(list, lp(MATCH_PARENT, 0, weight = 1f, top = 6.dp()))
         setContentView(root)
+        refreshRangeLabels()
         reload()
         Log.i(tag, "log viewer opened: ${files.size} day files")
+    }
+
+    private val rangeFormat = SimpleDateFormat("d MMM, HH:mm", Locale.US)
+
+    private fun rangeField(label: String, onTap: () -> Unit) = TextView(this).apply {
+        tag = label
+        text = "$label  –"; textSize = 14f; gravity = Gravity.CENTER_VERTICAL
+        setTextColor(Color.parseColor("#E6E6EA"))
+        setOnClickListener { onTap() }
+    }
+
+    private fun refreshRangeLabels() {
+        fromView.text = "From  " + (fromMs?.let { rangeFormat.format(Date(it)) } ?: "–")
+        toView.text = "To  " + (toMs?.let { rangeFormat.format(Date(it)) } ?: "–")
+        clearView.visibility = if (fromMs != null || toMs != null) View.VISIBLE else View.GONE
+    }
+
+    private fun oldestLogMs(): Long? = files.lastOrNull()?.let {
+        try {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                .parse(it.name.removePrefix("drivebuddy-").removeSuffix(".log"))?.time
+        } catch (e: Exception) { null }
+    }
+
+    /** Date, then time (24-hour). The calendar can't go past today or before the oldest log. */
+    private fun pick(isFrom: Boolean) {
+        val start = Calendar.getInstance().apply { timeInMillis = (if (isFrom) fromMs else toMs) ?: System.currentTimeMillis() }
+        val dialog = DatePickerDialog(this, { _, y, m, d ->
+            TimePickerDialog(this, { _, h, min ->
+                val cal = Calendar.getInstance().apply { clear(); set(y, m, d, h, min, 0) }
+                applyPicked(isFrom, cal.timeInMillis)
+            }, start.get(Calendar.HOUR_OF_DAY), start.get(Calendar.MINUTE), true).show()
+        }, start.get(Calendar.YEAR), start.get(Calendar.MONTH), start.get(Calendar.DAY_OF_MONTH))
+        dialog.datePicker.maxDate = System.currentTimeMillis()
+        oldestLogMs()?.let { dialog.datePicker.minDate = it }
+        dialog.show()
+    }
+
+    private fun applyPicked(isFrom: Boolean, picked: Long) {
+        val newFrom = if (isFrom) picked else fromMs
+        val newTo = if (isFrom) toMs else picked
+        when (val check = LogRange.validate(newFrom, newTo, System.currentTimeMillis(), oldestLogMs())) {
+            is LogRange.Check.Error -> {
+                Log.i(tag, "log range rejected: ${check.message}")
+                Toast.makeText(this, check.message, Toast.LENGTH_LONG).show()
+            }
+            is LogRange.Check.Ok -> {
+                fromMs = check.fromMs
+                toMs = check.toMs
+                if (check.toClamped) Toast.makeText(this, "\"To\" set to now", Toast.LENGTH_SHORT).show()
+                refreshRangeLabels()
+                // A range replaces the day and window pickers.
+                curDay = 0; days.setSelection(0)
+                curWin = 0; windowSpinner.setSelection(0)
+                query = query.copy(fromMs = fromMs, toMs = toMs?.let { LogRange.endOfMinute(it) }, windowMs = null)
+                Log.i(tag, "log range applied: from=${fromMs != null} to=${toMs != null}")
+                reload()
+            }
+        }
+    }
+
+    private fun clearRange() {
+        if (fromMs == null && toMs == null) return
+        fromMs = null; toMs = null
+        query = query.copy(fromMs = null, toMs = null)
+        refreshRangeLabels()
+    }
+
+    private fun clearRangeAndReload() {
+        clearRange()
+        if (files.isNotEmpty()) { curDay = 1; days.setSelection(1) } // back to the newest day
+        reload()
     }
 
     private fun lp(w: Int, h: Int, weight: Float = 0f, left: Int = 0, top: Int = 0) =
@@ -241,8 +342,9 @@ class LogActivity : Activity() {
         val q = query
         io.execute {
             val now = System.currentTimeMillis()
+            val lower = q.fromMs ?: q.windowMs?.let { now - it }
             val chosen = (if (sel <= 0) files.reversed() else listOf(files[sel - 1]))
-                .filter { q.windowMs == null || it.lastModified() >= now - q.windowMs }
+                .filter { lower == null || it.lastModified() >= lower }
             val lines = chosen.flatMap { f ->
                 try { f.readLines() } catch (e: Exception) { Log.w(tag, "log read failed: ${e.javaClass.simpleName}"); emptyList() }
             }.mapNotNull(LogParser::parse)
@@ -251,7 +353,8 @@ class LogActivity : Activity() {
                 if (id != loadId) return@post
                 shown = result.rows
                 adapter.rows = result.rows
-                adapter.showDate = sel <= 0 && (q.windowMs ?: Long.MAX_VALUE) > 3 * 3_600_000L
+                adapter.showDate = sel <= 0 &&
+                        (q.windowMs ?: ((q.toMs ?: System.currentTimeMillis()) - (q.fromMs ?: 0L))) > 3 * 3_600_000L
                 adapter.notifyDataSetChanged()
                 count.text = "${result.total} lines" +
                         if (result.total > result.rows.count { !it.isBreak }) " (showing the newest ${result.rows.count { !it.isBreak }})" else ""

@@ -26,6 +26,8 @@ sealed class Command {
     object Weather : Command()
     object Time : Command()
     object Date : Command()
+    /** "start my ride": presses Start on Quick Ride's ride reminder. */
+    object StartRide : Command()
     /** "find a petrol pump near me", "nearest atm" ... [what] is the thing to search for. */
     data class Nearby(val what: String) : Command()
     data class Call(val name: String) : Command()
@@ -127,6 +129,9 @@ object CommandParser {
         "^(?:(?:start|begin|run|let's|lets|let us|time to)(?: my| the)? )?commute(?: mode)?$"
     )
 
+    // "start my ride", "begin the quick ride". Must be checked before the generic "start <app>" rule.
+    private val startRideRule = Regex("^(?:start|begin) (?:my |the )?(?:quick ?ride|ride)(?: now)?$")
+
     private val alarmWord = Regex("\\balarms?\\b")
     private val cancelVerb = Regex("^(?:cancel|delete|remove|turn off|switch off|disable|dismiss|clear|stop) (.+)$")
     private val everyAlarm = Regex("\\b(?:all|every|everything)\\b|\\balarms\\b")
@@ -174,6 +179,7 @@ object CommandParser {
         }
         if (stopNavigationRule.matches(core)) return Command.StopNavigation
         if (commuteRule.matches(core)) return Command.Commute
+        if (startRideRule.matches(core)) return Command.StartRide
         if (weatherRule.matches(core)) return Command.Weather
         if (timeRule.matches(core)) return Command.Time
         if (dateRule.matches(core)) return Command.Date
